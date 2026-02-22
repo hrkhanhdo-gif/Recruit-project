@@ -15,7 +15,8 @@ const DOCUMENT_FOLDER_ID = ''; // Will be auto-created if empty
 
 // ====================== CẤU HÌNH GEMINI CV PARSER (2026) ======================
 const GEMINI_API_KEY = 'AIzaSyCOIQiwucbtKWpFUF-65ICt8QNJygUvZL4';
-const MODEL = 'gemini-2.5-flash';   // Khuyến nghị: nhanh + PDF native cực mạnh
+const MODEL = 'gemini-2.0-flash';   // ✅ Model hợp lệ (2026) - đã sửa từ gemini-1.5-flash-latest (lỗi 404)
+const GEMINI_API_VERSION = 'v1beta'; // Phiên bản API
 
 const CV_SCHEMA = {
   "type": "object",
@@ -79,7 +80,7 @@ function apiParseCV(fileData) {
  * Chấp nhận: fileData (CV PDF) HOẶC textOnly + prompt + schema
  */
 function callGeminiAI(input) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
   let parts = [];
 
   if (input.text_only) {
@@ -227,7 +228,7 @@ function apiAnalyzeCandidateMatching(candidateId, ticketId) {
  */
 function apiChatWithGemini(userMessage) {
   try {
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent?key=" + GEMINI_API_KEY;
+    const url = "https://generativelanguage.googleapis.com/" + GEMINI_API_VERSION + "/models/" + MODEL + ":generateContent?key=" + GEMINI_API_KEY;
     
     // Tạo ngữ cảnh hệ thống để AI hiểu vai trò
     const systemContext = `Bạn là "Trợ lý Tuyển dụng Trung Khánh" - một AI tích hợp trong hệ thống ATS.
@@ -2619,29 +2620,48 @@ function apiGetJobsV3() {
         
         const lastRow = sheet.getLastRow();
         const lastCol = sheet.getLastColumn();
-        if (lastRow < 2) return []; // Only headers or empty
+        if (lastRow < 2) return [];
 
-        const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+        const data = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+        const headers = data[0];
+        const rows = data.slice(1);
         
-        // Headers are known: ID, Title, Department, Location, Type, Status, Created_Date, Description
-        // Indices: 0, 1, 2, 3, 4, 5, 6, 7
-        
-        const jobs = data.map(row => ({
-            ID: row[0] ? String(row[0]) : '',
-            Title: row[1] ? String(row[1]) : '',
-            Department: row[2] ? String(row[2]) : '',
-            Location: row[3] ? String(row[3]) : '',
-            Type: row[4] ? String(row[4]) : '',
-            Status: row[5] ? String(row[5]) : '',
-            Created_Date: row[6] ? String(row[6]) : '',
-            Description: row[7] ? String(row[7]) : ''
+        const getColIdx = (name) => findColumnIndex(headers, name);
+
+        const jobs = rows.map(row => ({
+            ID: row[getColIdx('ID')] ? String(row[getColIdx('ID')]) : '',
+            Title: row[getColIdx('Title')] ? String(row[getColIdx('Title')]) : '',
+            Department: row[getColIdx('Department')] ? String(row[getColIdx('Department')]) : '',
+            Position: row[getColIdx('Position')] !== -1 ? String(row[getColIdx('Position')]) : '', // MAPPING ĐỘNG
+            Location: row[getColIdx('Location')] ? String(row[getColIdx('Location')]) : '',
+            Type: row[getColIdx('Type')] ? String(row[getColIdx('Type')]) : '',
+            Status: row[getColIdx('Status')] ? String(row[getColIdx('Status')]) : '',
+            Created_Date: row[getColIdx('Created_Date')] ? String(row[getColIdx('Created_Date')]) : '',
+            Description: row[getColIdx('Description')] ? String(row[getColIdx('Description')]) : '',
+            TicketID: row[getColIdx('TicketID')] !== -1 ? String(row[getColIdx('TicketID')]) : '' // MAPPING ĐỘNG
         }));
         
-        return jobs.reverse(); // Newest first
+        return jobs.reverse();
     } catch (e) {
         return [{ID: 'CRITICAL', Title: 'Error V3: ' + e.toString(), Status: 'Error'}];
     }
 }
+
+/**
+ * Hàm dự phòng hỗ trợ lấy tin tuyển dụng theo ID
+ * Giúp khắc phục lỗi "getJobById is not a function" nếu bị gọi từ phiên bản cũ
+ */
+function apiGetJobById(id) {
+    try {
+        const jobs = apiGetJobsV3();
+        const job = jobs.find(j => String(j.ID) === String(id));
+        return job || null;
+    } catch (e) {
+        Logger.log('Error apiGetJobById: ' + e.toString());
+        return null;
+    }
+}
+
 
 function apiUpdateJobV3(jobData) {
     try {
@@ -4681,3 +4701,207 @@ function apiSaveRejectionReasons(reasons) {
         return { success: false, message: e.toString() };
     }
 }
+
+/**
+ * Hàm mới: Tạo lịch phỏng vấn và gửi email thư mời
+ */
+function scheduleInterviewAdvanced(data) {
+  try {
+    var startDateTime = new Date(data.date + "T" + data.startTime + ":00");
+    var endDateTime = new Date(data.date + "T" + data.endTime + ":00");
+    
+    var calendarId = 'b4a01a2123b4134ecadfc6178e645a47acaa5653478befa66693b0859de28602@group.calendar.google.com';
+    var calendar = CalendarApp.getCalendarById(calendarId); 
+    
+    if (!calendar) {
+      return { success: false, message: "Lỗi: Không tìm thấy Lịch. Vui lòng kiểm tra quyền chia sẻ của Lịch." };
+    }
+
+    var eventTitle = "Phỏng vấn " + (data.jobTitle || "Dự án") + " - " + data.candidateName;
+    var emailBody = "Chào " + data.candidateName + ",\n\n" +
+                    "Chúng tôi trân trọng mời bạn tham gia buổi phỏng vấn cho vị trí " + (data.jobTitle || "") + ".\n" +
+                    "Thời gian: " + data.startTime + " - " + data.endTime + ", Ngày " + data.date + ".\n\n" +
+                    "Vui lòng nhấn [Đồng ý/Yes] trong thư mời này để xác nhận lịch phỏng vấn.\n\n" +
+                    "Trân trọng,\nPhòng Tuyển Dụng.";
+
+    var event = calendar.createEvent(eventTitle, startDateTime, endDateTime, {
+      description: emailBody,
+      guests: data.candidateEmail + (data.interviewerEmail ? ("," + data.interviewerEmail) : ""),
+      sendInvites: true 
+    });
+
+    return { 
+      success: true, 
+      message: "Đã tạo lịch phỏng vấn và gửi email thư mời tự động thành công!" 
+    };
+
+  } catch (error) {
+    Logger.log(error);
+    return { success: false, message: "Lỗi tạo lịch: " + error.message };
+  }
+}
+
+
+// ======================================================================
+// TÍNH NĂNG TỰ ĐỘNG LẤY CV TỪ GMAIL (Gmail CV Auto-Fetcher)
+// ======================================================================
+
+/**
+ * Hàm chính: Quét Gmail và lưu CV ứng viên tự động
+ * Chạy định kỳ theo Trigger (15 phút / lần)
+ * Điều kiện: Email phải có nhãn 'Tuyen-dung' và chưa đọc
+ */
+function autoFetchCVFromGmail() {
+    try {
+        var threads = GmailApp.search('label:Tuyen-dung is:unread has:attachment', 0, 20);
+
+        if (threads.length === 0) {
+            Logger.log("[Gmail CV] Không tìm thấy email nào mới có nhãn 'Tuyen-dung'.");
+            return;
+        }
+
+        Logger.log("[Gmail CV] Tìm thấy " + threads.length + " luồng thư mới. Đang xử lý...");
+
+        // Kết nối Drive & Sheets dùng các hằng số hệ thống
+        var folder = DriveApp.getFolderById(CV_FOLDER_ID);
+        var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+        var sheet = ss.getSheetByName(CANDIDATE_SHEET_NAME);
+        if (!sheet) {
+            Logger.log("[Gmail CV] Lỗi: Không tìm thấy sheet '" + CANDIDATE_SHEET_NAME + "'");
+            return;
+        }
+        var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+        var savedCount = 0;
+
+        for (var i = 0; i < threads.length; i++) {
+            var messages = threads[i].getMessages();
+            for (var j = 0; j < messages.length; j++) {
+                var message = messages[j];
+                if (!message.isUnread()) continue;
+
+                var attachments = message.getAttachments();
+                var senderEmail = extractEmailAddress_(message.getFrom());
+                var subject = message.getSubject() || '(Không có tiêu đề)';
+
+                var hasValidAttachment = false;
+
+                for (var k = 0; k < attachments.length; k++) {
+                    var attachment = attachments[k];
+                    var mimeType = attachment.getContentType();
+
+                    var isPDF = mimeType === 'application/pdf';
+                    var isWord = mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                              || mimeType === 'application/msword';
+
+                    if (!isPDF && !isWord) continue;
+
+                    hasValidAttachment = true;
+
+                    // 1. Lưu file CV vào Google Drive
+                    var file = folder.createFile(attachment);
+                    var cvUrl = file.getUrl();
+                    Logger.log("[Gmail CV] Đã lưu file: " + file.getName() + " - " + cvUrl);
+
+                    // 2. Cố gắng dùng AI để phân tích CV
+                    var parsedData = {};
+                    try {
+                        if (isPDF) {
+                            var base64 = Utilities.base64Encode(attachment.getBytes());
+                            parsedData = callGeminiAI({
+                                base64: base64,
+                                type: 'application/pdf',
+                                custom_prompt: 'Bạn là chuyên gia tuyển dụng. Hãy phân tích CV đính kèm và trả về JSON gồm: Name, Phone, Email, Position, School, Major, Experience. Chỉ trả về JSON thuần túy, không có text thêm.',
+                                schema: CV_SCHEMA
+                            });
+                        }
+                    } catch (aiErr) {
+                        Logger.log("[Gmail CV] Lỗi AI phân tích CV: " + aiErr.message);
+                    }
+
+                    // 3. Tạo dòng dữ liệu mới
+                    var dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm:ss");
+                    var uniqueId = 'GML_' + new Date().getTime();
+                    var newRow = new Array(headers.length).fill('');
+
+                    var colIdx = function(name) { return findColumnIndex(headers, name); };
+
+                    var idIdx = colIdx('ID'); if (idIdx > -1) newRow[idIdx] = uniqueId;
+                    var dateIdx = colIdx('Created_Date'); if (dateIdx > -1) newRow[dateIdx] = dateStr;
+                    var nameIdx = colIdx('Candidate_Name');
+                    if (nameIdx > -1) newRow[nameIdx] = parsedData.Name || ('Ứng viên - ' + senderEmail.split('@')[0]);
+                    var emailIdx = colIdx('Email'); if (emailIdx > -1) newRow[emailIdx] = parsedData.Email || senderEmail;
+                    var phoneIdx = colIdx('Phone'); if (phoneIdx > -1) newRow[phoneIdx] = parsedData.Phone || '';
+                    var posIdx = colIdx('Position'); if (posIdx > -1) newRow[posIdx] = parsedData.Position || '';
+                    var schoolIdx = colIdx('School'); if (schoolIdx > -1) newRow[schoolIdx] = parsedData.School || '';
+                    var majorIdx = colIdx('Major'); if (majorIdx > -1) newRow[majorIdx] = parsedData.Major || '';
+                    var expIdx = colIdx('Experience'); if (expIdx > -1) newRow[expIdx] = parsedData.Experience || '';
+                    var srcIdx = colIdx('Source'); if (srcIdx > -1) newRow[srcIdx] = 'Gmail Auto';
+                    var stageIdx = colIdx('Stage'); if (stageIdx > -1) newRow[stageIdx] = 'Applied';
+                    var cvIdx = colIdx('CV_Link'); if (cvIdx > -1) newRow[cvIdx] = cvUrl;
+                    var noteIdx = colIdx('Notes'); if (noteIdx > -1) newRow[noteIdx] = 'Tự động từ Gmail: ' + subject;
+
+                    sheet.appendRow(newRow);
+                    savedCount++;
+                    Logger.log("[Gmail CV] Đã thêm ứng viên: " + (parsedData.Name || senderEmail));
+                }
+
+                // Đánh dấu email đã đọc nếu đã xử lý ít nhất 1 file hợp lệ
+                if (hasValidAttachment) {
+                    message.markRead();
+                }
+            }
+        }
+
+        Logger.log("[Gmail CV] Hoàn tất. Đã xử lý " + savedCount + " CV mới.");
+    } catch (e) {
+        Logger.log("[Gmail CV] Lỗi: " + e.message + "\n" + e.stack);
+    }
+}
+
+/**
+ * Hàm phụ: Trích xuất địa chỉ email từ chuỗi "Tên <email@domain.com>"
+ */
+function extractEmailAddress_(fromStr) {
+    if (!fromStr) return '';
+    var emailMatch = fromStr.match(/<([^>]+)>/);
+    return emailMatch ? emailMatch[1] : fromStr.trim();
+}
+
+/**
+ * Cài đặt Trigger tự động chạy mỗi 15 phút
+ * Gọi hàm này 1 lần từ Script Editor để kích hoạt
+ */
+function setupAutoGmailTrigger() {
+    // Xoá các trigger cũ cùng tên để tránh chạy trùng
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getHandlerFunction() === 'autoFetchCVFromGmail') {
+            ScriptApp.deleteTrigger(triggers[i]);
+        }
+    }
+
+    // Tạo trigger mới: chạy mỗi 15 phút
+    ScriptApp.newTrigger('autoFetchCVFromGmail')
+        .timeBased()
+        .everyMinutes(15)
+        .create();
+
+    Logger.log("[Gmail CV] ✅ Đã cài đặt Trigger tự động quét Gmail mỗi 15 phút!");
+}
+
+/**
+ * Tắt toàn bộ trigger Gmail CV (dùng khi muốn dừng tính năng)
+ */
+function removeAutoGmailTrigger() {
+    var triggers = ScriptApp.getProjectTriggers();
+    var count = 0;
+    for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getHandlerFunction() === 'autoFetchCVFromGmail') {
+            ScriptApp.deleteTrigger(triggers[i]);
+            count++;
+        }
+    }
+    Logger.log("[Gmail CV] Đã xoá " + count + " trigger.");
+}
+
