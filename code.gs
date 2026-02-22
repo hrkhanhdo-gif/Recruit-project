@@ -3,51 +3,341 @@
 // USER CONFIGURATION
 const SPREADSHEET_ID = '14BI-24jotB8qrglwXn2oKe2cfwfNwbmLBFKqYp-zG-M';
 const CV_FOLDER_ID = '1xhqxLSXYQLQ0qSYhnQjAXkwI-EbUtv_M';
-const DOCUMENT_FOLDER_ID = ''; 
-
-// CONSOLIDATED SHEET NAMES (New structure)
-const CORE_CANDIDATES = 'CANDIDATES';        // Was DATA ỨNG VIÊN
-const SYS_SETTINGS = 'SYS_SETTINGS';         // Multi-purpose: Company, Stages, Depts, Sources, Reasons
-const SYS_RESOURCES = 'SYS_RESOURCES';       // Multi-purpose: Jobs, News, Email_Templates
-const SYS_ACCOUNTS = 'SYS_ACCOUNTS';         // Multi-purpose: Users, Recruiters
-const CORE_RECRUITMENT = 'CORE_RECRUITMENT'; // Multi-purpose: Projects, Tickets, Evaluations
-const SYSTEM_LOGS = 'SYSTEM_LOGS';           // Multi-purpose: Activity, Debug
-
-// LEGACY NAMES (For migration and fallback)
 const CANDIDATE_SHEET_NAME = 'DATA ỨNG VIÊN';
 const SETTINGS_SHEET_NAME = 'CẤU HÌNH HỆ THỐNG';
 const COMPANY_CONFIG_SHEET_NAME = 'CẤU HÌNH CÔNG TY';
 const EVALUATION_SHEET_NAME = 'EVALUATIONS';
 const USERS_SHEET_NAME = 'Users';
-const SOURCE_SHEET_NAME = 'DATA_SOURCES';
-const RECRUITER_SHEET_NAME = 'Recruiters';
+const SOURCE_SHEET_NAME = 'Survey_Data';
 const PROJECTS_SHEET_NAME = 'PROJECTS';
 const TICKETS_SHEET_NAME = 'RECRUITMENT_TICKETS';
+const DOCUMENT_FOLDER_ID = ''; // Will be auto-created if empty
+
+// ====================== CẤU HÌNH GEMINI CV PARSER (2026) ======================
+const GEMINI_API_KEY = 'AIzaSyCOIQiwucbtKWpFUF-65ICt8QNJygUvZL4';
+const MODEL = 'gemini-2.5-flash';   // Khuyến nghị: nhanh + PDF native cực mạnh
+
+const CV_SCHEMA = {
+  "type": "object",
+  "properties": {
+    "Name": {
+      "type": "string",
+      "description": "Họ và tên đầy đủ của ứng viên"
+    },
+    "Phone": {
+      "type": "string",
+      "description": "Số điện thoại (có thể kèm mã vùng)"
+    },
+    "Email": {
+      "type": "string",
+      "description": "Địa chỉ email"
+    },
+    "Birth_Year": {
+      "type": "integer",
+      "description": "Năm sinh (chỉ số năm, ví dụ: 1995). Nếu không có thì null"
+    },
+    "Experience": {
+      "type": "string",
+      "description": "Số năm kinh nghiệm hoặc tóm tắt kinh nghiệm làm việc"
+    },
+    "School": {
+      "type": "string",
+      "description": "Tên trường đại học/cao đẳng chính"
+    },
+    "Major": {
+      "type": "string",
+      "description": "Ngành học chính"
+    },
+    "Position": {
+      "type": "string",
+      "description": "Vị trí ứng tuyển phù hợp nhất dựa trên toàn bộ CV"
+    }
+  },
+  "required": ["Name", "Email"]
+};
+
+/**
+ * Hàm chính nhận file CV → trả về JSON sạch
+ */
+function apiParseCV(fileData) {
+  try {
+    return callGeminiAI(fileData);
+  } catch (error) {
+    console.error("Lỗi Gemini CV Parser:", error);
+    return { 
+      error: "Lỗi xử lý CV: " + error.toString(),
+      raw: error.message 
+    };
+  }
+}
+
+/**
+ * Gọi Gemini với Structured JSON Output
+ */
+/**
+ * Gọi Gemini với Structured JSON Output
+ * Chấp nhận: fileData (CV PDF) HOẶC textOnly + prompt + schema
+ */
+function callGeminiAI(input) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  let parts = [];
+
+  if (input.text_only) {
+    parts.push({ "text": input.custom_prompt || "Hãy xử lý yêu cầu sau và trả về JSON." });
+  } else {
+    const promptText = input.custom_prompt || "Bạn là chuyên gia tuyển dụng. Hãy phân tích CV đính kèm và trích xuất thông tin chính xác theo JSON Schema đã định nghĩa.";
+    parts.push({ "text": promptText });
+
+    if (input.base64) {
+      parts.push({
+        "inline_data": {
+          "mime_type": input.type || "application/pdf",
+          "data": input.base64
+        }
+      });
+    }
+  }
+
+  const payload = {
+    "contents": [{ "parts": parts }],
+    "generationConfig": {
+      "responseMimeType": "application/json",
+      "responseJsonSchema": input.schema || (input.text_only ? undefined : CV_SCHEMA),
+      "temperature": 0.2,
+      "maxOutputTokens": 2048
+    }
+  };
+
+  const options = {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify(payload),
+    "muteHttpExceptions": true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  const responseCode = response.getResponseCode();
+  const responseText = response.getContentText();
+
+  if (responseCode !== 200) {
+    throw new Error(`Gemini API Error (${responseCode}): ${responseText}`);
+  }
+
+  const json = JSON.parse(responseText);
+  if (!json.candidates?.[0]?.content?.parts?.[0]?.text) {
+    throw new Error("Không nhận được kết quả từ Gemini");
+  }
+
+  const resultText = json.candidates[0].content.parts[0].text.trim();
+  try {
+    return JSON.parse(resultText);
+  } catch (e) {
+    const cleaned = resultText.replace(/```json|```/g, "").trim();
+    return JSON.parse(cleaned);
+  }
+}
+
+/**
+ * AI: Tạo JD công việc tự động
+ */
+function apiGenerateJD(jobTitle, coreRequirements) {
+  try {
+    const prompt = `Bạn là một chuyên gia HR. Hãy soạn thảo một bản mô tả công việc (JD) chi tiết cho vị trí: ${jobTitle}. 
+    Các yêu cầu chính bao gồm: ${coreRequirements}. 
+    Bản JD cần có các mục rõ ràng (Giới thiệu, Trách nhiệm, Yêu cầu, Quyền lợi). 
+    Ngôn ngữ: Tiếng Việt, chuyên nghiệp. Trả về JSON: {"jd": "nội dung JD dạng HTML hoặc Markdown nhẹ"}`;
+
+    const res = callGeminiAI({ 
+      text_only: true, 
+      custom_prompt: prompt,
+      schema: {
+        type: "object",
+        properties: {
+          jd: { type: "string" }
+        },
+        required: ["jd"]
+      }
+    });
+    return { success: true, jd: res.jd };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+/**
+ * AI: Phân tích mức độ phù hợp giữa Ứng viên và Ticket JD
+ */
+function apiAnalyzeCandidateMatching(candidateId, ticketId) {
+  try {
+    // 1. Lấy dữ liệu ứng viên
+    const candSheet = getSheetByName(CANDIDATE_SHEET_NAME);
+    const candData = candSheet.getDataRange().getValues();
+    const candHeaders = candData[0];
+    const candidateRow = candData.find(row => String(row[candHeaders.indexOf('ID')]) === String(candidateId));
+
+    if (!candidateRow) throw new Error("Không tìm thấy ứng viên.");
+    
+    const candidate = {};
+    candHeaders.forEach((h, i) => candidate[h] = candidateRow[i]);
+
+    // 2. Lấy dữ liệu Ticket/JD
+    const ticketSheet = getSheetByName(TICKETS_SHEET_NAME);
+    let ticket = null;
+    if (ticketSheet) {
+        const tickData = ticketSheet.getDataRange().getValues();
+        const tickHeaders = tickData[0];
+        const ticketRow = tickData.find(row => String(row[tickHeaders.indexOf('TicketID') || tickHeaders.indexOf('Mã Ticket')]) === String(ticketId));
+        if (ticketRow) {
+            ticket = {};
+            tickHeaders.forEach((h, i) => ticket[h] = ticketRow[i]);
+        }
+    }
+
+    const jdText = ticket ? `Vị trí: ${ticket['Position'] || ticket['Vị trí']}. Yêu cầu: ${ticket['Job_Description'] || ticket['Mô tả'] || ''}` : "Chưa rõ JD cụ thể.";
+    const candidateText = `Học vấn: ${candidate['School']}. Chuyên ngành: ${candidate['Major']}. Kinh nghiệm: ${candidate['Experience']}. Ghi chú: ${candidate['Notes']}`;
+
+    const prompt = `Hãy so sánh ứng viên với JD sau. Chấm điểm 0-100 và nêu ưu/nhược điểm.
+    JD: ${jdText}
+    Candidate: ${candidateText}
+    Trả về JSON: {"score": number, "pros": ["..."], "cons": ["..."], "summary": "..."}`;
+
+    const analysis = callGeminiAI({ 
+        text_only: true, 
+        custom_prompt: prompt,
+        schema: {
+            type: "object",
+            properties: {
+                score: { type: "number" },
+                pros: { type: "array", items: { type: "string" } },
+                cons: { type: "array", items: { type: "string" } },
+                summary: { type: "string" }
+            },
+            required: ["score", "pros", "cons", "summary"]
+        }
+    });
+    });
+
+    return { success: true, analysis: analysis };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+/**
+ * API Chatbot: Trả lời câu hỏi dựa trên ngữ cảnh hệ thống
+ */
+function apiChatWithGemini(userMessage) {
+  try {
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent?key=" + GEMINI_API_KEY;
+    
+    // Tạo ngữ cảnh hệ thống để AI hiểu vai trò
+    const systemContext = `Bạn là "Trợ lý Tuyển dụng Trung Khánh" - một AI tích hợp trong hệ thống ATS.
+    Nhiệm vụ:
+    1. Tra cứu dữ liệu (Ứng viên, Ticket, Lịch trình).
+    2. Giải đáp quy trình tuyển dụng.
+    3. Hỗ trợ soạn thảo (Email, JD, Ghi chú).
+    
+    Phong cách: Chuyên nghiệp, thân thiện, trả lời ngắn gọn.
+    Định dạng: Sử dụng Markdown nhẹ, xuống dòng rõ ràng.
+    
+    Dữ liệu ngữ cảnh hiện tại:
+    - Người phụ trách: Admin Trung Khánh.
+    - Hệ thống: ATS (Applicant Tracking System).`;
+
+    const payload = {
+      "contents": [
+        { 
+          "role": "user", 
+          "parts": [{ "text": systemContext + "\n\nNgười dùng hỏi: " + userMessage }] 
+        }
+      ],
+      "generationConfig": { 
+        "temperature": 0.7,
+        "maxOutputTokens": 1024
+      }
+    };
+
+    const options = {
+      "method": "post",
+      "contentType": "application/json",
+      "payload": JSON.stringify(payload),
+      "muteHttpExceptions": true
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+    
+    if (responseCode !== 200) {
+      throw new Error(`Gemini Error: ${responseText}`);
+    }
+
+    const json = JSON.parse(responseText);
+    const answer = json.candidates?.[0]?.content?.parts?.[0]?.text || "Em chưa tìm ra câu trả lời phù hợp, anh thử hỏi cách khác nhé.";
+    
+    return { success: true, answer: answer };
+
+  } catch (error) {
+    console.error("Chatbot Error:", error);
+    return { success: false, message: error.toString() };
+  }
+}
+
+/**
+ * Hàm tạo lịch phỏng vấn trên Google Calendar
+ */
+function apiCreateInterviewSchedule(scheduleData) {
+    try {
+        const { candidateName, candidateEmail, managerEmail, startTime, endTime, location, note } = scheduleData;
+        
+        const start = new Date(startTime);
+        const end = new Date(endTime);
+        
+        const eventTitle = `[Phỏng vấn] ${candidateName} - Phụ trách: ${managerEmail}`;
+        const description = `Ghi chú: ${note}\n\nỨng viên: ${candidateName}\nEmail: ${candidateEmail}`;
+        
+        const event = CalendarApp.getDefaultCalendar().createEvent(eventTitle, start, end, {
+            location: location || 'Văn phòng Công ty / Online (Google Meet)',
+            description: description,
+            guests: `${candidateEmail},${managerEmail}`, 
+            sendInvites: true
+        });
+
+        return { 
+            success: true, 
+            eventId: event.getId(),
+            message: 'Đã tạo lịch và gửi thư mời thành công!'
+        };
+        
+    } catch (error) {
+        return { success: false, message: 'Lỗi tạo lịch: ' + error.toString() };
+    }
+}
 
 
 // Shared Candidate Aliases for mapping Frontend keys to Sheet Headers
 const CANDIDATE_ALIASES = {
-  'ID': ['ID', 'Mã'],
+  'ID': ['ID', 'Mã', 'Mã ứng viên'],
   'Name': ['Name', 'Họ và Tên', 'Họ tên', 'Họ tên ứng viên'],
   'Gender': ['Gender', 'Giới tính'],
   'Birth_Year': ['Birth_Year', 'Năm sinh', 'Birth Year', 'Namsinh'],
   'Phone': ['Phone', 'Số điện thoại', 'SĐT', 'SDT'],
   'Email': ['Email'],
-  'Department': ['Department', 'Phòng ban'],
-  'Position': ['Position', 'Vị trí', 'Vị trí ứng tuyển'],
+  'Department': ['Department', 'Phòng ban', 'Bộ phận'],
+  'Position': ['Position', 'Vị trí', 'Vị trí ứng tuyển', 'Chức danh'],
   'Experience': ['Experience', 'Kinh nghiệm'],
-  'School': ['School', 'Học vấn', 'Trường học', 'Tên trường'],
+  'School': ['School', 'Học vấn', 'Trường học', 'Tên trường', 'Đại học'],
   'Education_Level': ['Education_Level', 'Trình độ', 'Trình độ học vấn', 'Education Level'],
-  'Major': ['Major', 'Chuyên ngành'],
-  'Salary_Expectation': ['Salary_Expectation', 'Mức lương mong muốn', 'Expected Salary', 'Expected_Salary', 'Salary'],
-  'Source': ['Source', 'Nguồn', 'Nguồn ứng viên'],
-  'Recruiter': ['Recruiter', 'Chuyên viên Tuyển dụng', 'Nhân viên tuyển dụng'],
-  'Stage': ['Stage', 'Trạng thái', 'Trạng thái tuyển dụng'],
+  'Major': ['Major', 'Chuyên ngành', 'Ngành học'],
+  'Salary_Expectation': ['Salary_Expectation', 'Mức lương mong muốn', 'Expected Salary', 'Expected_Salary', 'Salary', 'Lương đề xuất', 'Expected_Salary_TicketID'],
+  'Source': ['Source', 'Nguồn', 'Nguồn ứng viên', 'Data Sources'],
+  'Recruiter': ['Recruiter', 'Người phụ trách', 'Nhân viên tuyển dụng', 'Người tuyển dụng'],
+  'Stage': ['Stage', 'Trạng thái', 'Trạng thái tuyển dụng', 'Giai đoạn'],
   'Status': ['Status', 'Tình trạng liên hệ', 'Trạng thái liên lạc', 'Contact_Status'],
   'Notes': ['Notes', 'Ghi chú'],
-  'CV_Link': ['CV_Link', 'Link CV'],
-  'Applied_Date': ['Applied_Date', 'Ngày ứng tuyển'],
-  'User': ['User', 'Người cập nhật'],
+  'CV_Link': ['CV_Link', 'Link CV', 'CV Link'],
+  'Applied_Date': ['Applied_Date', 'Ngày ứng tuyển', 'Ngày Apply', 'Applied Date'],
+  'User': ['User', 'Người cập nhật', 'Creator'],
   'TicketID': ['TicketID', 'Mã Ticket', 'Ticket ID', 'Mã yêu cầu'],
   'Rejection_Type': ['Rejection_Type', 'Loại từ chối'],
   'Rejection_Reason': ['Rejection_Reason', 'Lý do từ chối'],
@@ -68,28 +358,6 @@ function debugSendsEmail() {
     Logger.log("Đã gửi email test đến: " + email);
   } else {
     Logger.log("Không lấy được email người dùng hiện tại. Hãy chạy bằng tài khoản chủ sở hữu.");
-  }
-}
-
-/**
- * PHASE 1: SAFETY BACKUP
- */
-function apiCreateBackup() {
-  try {
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const dateStr = Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd_HHmm");
-    const backupName = "BACKUP_ATS_" + dateStr;
-    const backupFile = DriveApp.getFileById(SPREADSHEET_ID).makeCopy(backupName);
-    
-    logActivity(Session.getActiveUser().getEmail() || 'System', 'Sao lưu', 'Đã tạo bản sao lưu hệ thống: ' + backupName, '');
-    
-    return { 
-      success: true, 
-      message: 'Đã sao lưu thành công bản: ' + backupName, 
-      url: backupFile.getUrl() 
-    };
-  } catch (e) {
-    return { success: false, message: 'Lỗi sao lưu: ' + e.toString() };
   }
 }
 
@@ -190,13 +458,11 @@ function sheetToObjects(sheetName) {
 }
 
 function apiGetProjects() {
-  const data = apiGetTableData('PROJECTS');
-  return { success: true, data: data };
+  return { success: true, data: sheetToObjects(PROJECTS_SHEET_NAME) };
 }
 
 function apiGetTickets() {
-  const data = apiGetTableData('RECRUITMENT_TICKETS');
-  return { success: true, data: data };
+  return { success: true, data: sheetToObjects(TICKETS_SHEET_NAME) };
 }
 
 /**
@@ -204,48 +470,78 @@ function apiGetTickets() {
  */
 function apiSaveProject(projectData) {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CORE_RECRUITMENT);
-    const code = projectData.code || ('PROJ_' + new Date().getTime());
-    
-    if (isConsolidated) {
-      saveConsolidatedRecord(CORE_RECRUITMENT, 'PROJECT', code, projectData, projectData.status || 'Active');
-      return { success: true, message: 'Lưu dự án thành công (Hệ thống mới)' };
+    let sheet = getSheetByName(PROJECTS_SHEET_NAME);
+    if (!sheet) {
+      initializeProjectSheets();
+      sheet = getSheetByName(PROJECTS_SHEET_NAME);
     }
     
-    // Legacy mapping...
-    let sheet = getSheetByName(PROJECTS_SHEET_NAME);
-    if (!sheet) { initializeProjectSheets(); sheet = getSheetByName(PROJECTS_SHEET_NAME); }
-    
-    const rows = sheet.getDataRange().getValues();
-    const headers = rows[0].map(h => String(h).trim());
-    const codeIdx = headers.indexOf('Mã Dự án');
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    const findIdx = (key) => {
+      let lowerHeaders = headers.map(h => h.toString().trim().toLowerCase());
+      let idx = lowerHeaders.indexOf(key.toLowerCase());
+      if (idx !== -1) return idx;
+      // You can expand this if needed, but for Projects we use direct match for now
+      return -1;
+    };
+
+    const quotaIdx = findIdx('Chỉ tiêu');
+    const budgetIdx = findIdx('Ngân sách');
+    const codeIdx = findIdx('Mã Dự án');
     
     let rowIndex = -1;
-    if (codeIdx !== -1) {
-       for (let i = 1; i < rows.length; i++) {
-         if (String(rows[i][codeIdx]).trim() === String(code)) { rowIndex = i + 1; break; }
-       }
+    if (projectData.code && codeIdx !== -1) {
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][codeIdx]).trim() === String(projectData.code).trim()) {
+          rowIndex = i + 1;
+          break;
+        }
+      }
     }
-    
-    const values = {
-      'Tên Dự án': projectData.name || '',
-      'Quy trình (Workflow)': projectData.workflow || '',
-      'Người quản lý': projectData.manager || '',
-      'Ngày bắt đầu': projectData.startDate || '',
-      'Ngày kết thúc': projectData.endDate || '',
-      'Chỉ tiêu': parseFloat(projectData.quota) || 0,
-      'Ngân sách': parseFloat(projectData.budget) || 0,
-      'Mã Dự án': code
-    };
-    
+
     if (rowIndex !== -1) {
-       headers.forEach((h, i) => { if (values[h] !== undefined) sheet.getRange(rowIndex, i + 1).setValue(values[h]); });
+      // Update specific columns to avoid overwriting other fields if headers changed
+      const updateData = {
+        'Tên Dự án': projectData.name || '',
+        'Quy trình (Workflow)': projectData.workflow || '',
+        'Người quản lý': projectData.manager || '',
+        'Ngày bắt đầu': projectData.startDate || '',
+        'Ngày kết thúc': projectData.endDate || '',
+        'Chỉ tiêu': parseFloat(projectData.quota) || 0,
+        'Ngân sách': parseFloat(projectData.budget) || 0
+      };
+
+      Object.keys(updateData).forEach(key => {
+        const idx = findIdx(key);
+        if (idx !== -1) {
+          sheet.getRange(rowIndex, idx + 1).setValue(updateData[key]);
+        }
+      });
+
+      return { success: true, message: 'Cập nhật dự án thành công.' };
     } else {
-       const newRow = headers.map(h => values[h] || '');
-       sheet.appendRow(newRow);
+      // For new project, construct row carefully
+      const newRow = new Array(headers.length).fill('');
+      const mapping = {
+        'Mã Dự án': projectData.code || ('PROJ_' + new Date().getTime()),
+        'Tên Dự án': projectData.name || '',
+        'Quy trình (Workflow)': projectData.workflow || '',
+        'Người quản lý': projectData.manager || '',
+        'Ngày bắt đầu': projectData.startDate || '',
+        'Ngày kết thúc': projectData.endDate || '',
+        'Trạng thái': 'Active',
+        'Chỉ tiêu': parseFloat(projectData.quota) || 0,
+        'Ngân sách': parseFloat(projectData.budget) || 0
+      };
+      
+      headers.forEach((h, i) => {
+        if (mapping[h]) newRow[i] = mapping[h];
+      });
+
+      sheet.appendRow(newRow);
+      return { success: true, message: 'Lưu dự án mới thành công.' };
     }
-    
-    return { success: true, message: 'Lưu dự án thành công.' };
   } catch (e) {
     return { success: false, message: e.toString() };
   }
@@ -256,91 +552,93 @@ function apiSaveProject(projectData) {
  */
 function apiSaveTicket(ticketData, currentUser) {
   try {
-     const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CORE_RECRUITMENT);
-     const ticketId = ticketData.id || ticketData.code || ('TICK_' + new Date().getTime());
-     const userDisplay = currentUser ? (currentUser.username || currentUser.email) : 'System';
-
-     if (isConsolidated) {
-        saveConsolidatedRecord(CORE_RECRUITMENT, 'TICKET', ticketId, ticketData, ticketData.status || 'Pending');
-        logActivity(userDisplay, 'Lưu Ticket', `Đã lưu phiếu tuyển dụng: ${ticketId}`, ticketId);
-        return { success: true, message: 'Lưu ticket thành công (Hệ thống mới)' };
-     }
-     
-     // Legacy Fallback
-     let sheet = getSheetByName(TICKETS_SHEET_NAME);
-     if (!sheet) { initializeProjectSheets(); sheet = getSheetByName(TICKETS_SHEET_NAME); }
-     
-     const dataRows = sheet.getDataRange().getValues();
-     const headers = dataRows[0].map(h => String(h).trim());
-     const idIdx = headers.indexOf('Mã Ticket') !== -1 ? headers.indexOf('Mã Ticket') : headers.indexOf('ID Ticket');
-     
-     let rowIndex = -1;
-     if (idIdx !== -1) {
-        for (let i = 1; i < dataRows.length; i++) {
-           if (String(dataRows[i][idIdx]).trim() === String(ticketId)) { rowIndex = i + 1; break; }
+    let sheet = getSheetByName(TICKETS_SHEET_NAME);
+    if (!sheet) {
+      initializeProjectSheets();
+      sheet = getSheetByName(TICKETS_SHEET_NAME);
+    }
+    
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0].map(h => String(h).trim());
+    const ticketCode = ticketData.code || ('TICK_' + new Date().getTime());
+    
+    // Check for existing ticket to update (support Admin edit and Manager edit request)
+    let rowIndex = -1;
+    if (ticketData.code) {
+      const codeIdx = headers.indexOf('Mã Ticket');
+      if (codeIdx !== -1) {
+        for (let i = 1; i < data.length; i++) {
+          if (String(data[i][codeIdx]).trim() === String(ticketData.code).trim()) {
+            rowIndex = i + 1;
+            break;
+          }
         }
-     }
-     
-     // Build row based on specific headers if they exist
-     const mapping = {
-       'Mã Ticket': ticketId,
-       'Dự án': ticketData.projectCode || ticketData.project || '',
-       'Vị trí': ticketData.position || '',
-       'Số lượng': ticketData.quantity || 1,
-       'Phòng ban': ticketData.department || '',
-       'Trạng thái Phê duyệt': ticketData.approvalStatus || 'Pending',
-       'Creator': userDisplay
-     };
+      }
+    }
 
-     if (rowIndex !== -1) {
-        headers.forEach((h, i) => { if (mapping[h] !== undefined) sheet.getRange(rowIndex, i + 1).setValue(mapping[h]); });
-        logActivity(userDisplay, 'Cập nhật Ticket', `Đã cập nhật ticket: ${ticketId}`, ticketId);
-     } else {
-        const newRow = headers.map(h => mapping[h] !== undefined ? mapping[h] : '');
-        sheet.appendRow(newRow);
-        logActivity(userDisplay, 'Tạo Ticket', `Đã tạo ticket mới: ${ticketId}`, ticketId);
-     }
-     
-     return { success: true, message: 'Lưu ticket thành công.' };
+    // Role-based status logic
+    let status = ticketData.approvalStatus || 'Pending';
+    if (currentUser && currentUser.role === 'Admin') {
+       // Admins can approve immediately if they filled Recruiter
+       if (ticketData.recruiterEmail) status = 'Approved';
+    } else if (status === 'Approved') {
+       // If a Manager edits an Approved ticket -> set back to Pending
+       status = 'Pending';
+    }
+    
+    const row = [
+      ticketCode,
+      ticketData.projectCode || '',
+      ticketData.position || '',
+      ticketData.quantity || 1,
+      ticketData.department || '',
+      ticketData.workType || '',
+      ticketData.gender || '',
+      ticketData.age || '',
+      ticketData.education || '',
+      ticketData.major || '',
+      ticketData.experience || '',
+      ticketData.startDate || '',
+      ticketData.deadline || '',
+      ticketData.directManager || '',
+      ticketData.office || '',
+      status, 
+      ticketData.costs ? JSON.stringify(ticketData.costs) : '', // Chi phí
+      ticketData.recruiterEmail || '', // Recruiter
+      status === 'Approved' ? Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd") : '', // Ngày duyệt
+      currentUser ? (currentUser.username || currentUser.email) : '' // Creator column
+    ];
+    
+    if (rowIndex > 0) {
+      // Update existing
+      sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+      
+      const userDisplay = currentUser ? (currentUser.username || currentUser.email) : 'System';
+      logActivity(userDisplay, 'Cập nhật Ticket', `Đã cập nhật phiếu yêu cầu tuyển dụng: ${ticketCode}. Trạng thái: ${status}`, ticketCode);
+      
+      if (currentUser && currentUser.role === 'Manager' && ticketData.approvalStatus === 'Approved') {
+         createNotification('admin', 'Ticket', `Manager ${userDisplay} yêu cầu chỉnh sửa ticket đã duyệt: ${ticketCode}. Trạng thái đã quay về Chờ duyệt.`, ticketCode);
+      }
+    } else {
+      // New row
+      sheet.appendRow(row);
+      const userDisplay = currentUser ? (currentUser.username || currentUser.email) : 'System';
+      logActivity(userDisplay, 'Tạo Ticket', `Đã tạo phiếu yêu cầu tuyển dụng: ${ticketCode}`, ticketCode);
+
+      if (currentUser && currentUser.role === 'Manager') {
+         createNotification('admin', 'Ticket', `Manager ${userDisplay} vừa tạo một yêu cầu tuyển dụng mới: ${ticketCode}`, ticketCode);
+      }
+    }
+
+    return { success: true, message: rowIndex > 0 ? 'Cập nhật phiếu thành công.' : 'Tạo phiếu yêu cầu thành công.' };
   } catch (e) {
-     Logger.log('ERROR apiSaveTicket: ' + e.toString());
-     return { success: false, message: e.toString() };
+    Logger.log('ERROR apiSaveTicket: ' + e.toString());
+    return { success: false, message: e.toString() };
   }
 }
 
 function apiApproveTicket(ticketCode, approvalData, adminUser) {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CORE_RECRUITMENT);
-    
-    if (isConsolidated) {
-      // 1. Get existing ticket
-      const tickets = apiGetTableData('RECRUITMENT_TICKETS');
-      const ticket = tickets.find(t => (t.Reference_ID || t['Mã Ticket']) === ticketCode);
-      if (!ticket) return { success: false, message: 'Không tìm thấy Ticket.' };
-      
-      // 2. Update fields
-      ticket.approvalStatus = approvalData.status || 'Approved';
-      ticket.recruiterEmail = approvalData.recruiterEmail || '';
-      ticket.majorCosts = approvalData.costs || [];
-      ticket.approvalDate = new Date().toISOString();
-      
-      // 3. Save back
-      saveConsolidatedRecord(CORE_RECRUITMENT, 'TICKET', ticketCode, ticket, ticket.approvalStatus);
-      
-      // 4. Notification to creator (if available in consolidated record)
-      const creator = ticket.creator; // Assuming 'creator' field exists in consolidated ticket
-      if (creator) {
-        const actionText = ticket.approvalStatus === 'Approved' ? 'đã được duyệt' : 'thay đổi trạng thái';
-        createNotification(creator, 'Ticket', `Phiếu tuyển dụng ${ticketCode} của bạn ${actionText}.`, ticketCode);
-      }
-
-      // 5. Activity Log
-      logActivity(adminUser || 'Admin', 'Phê duyệt Ticket', `Đã duyệt Ticket ${ticketCode} - Trạng thái: ${ticket.approvalStatus}`, ticketCode);
-      
-      return { success: true, message: 'Đã phê duyệt Ticket thành công (Hệ thống mới)' };
-    }
-
-    // Legacy Fallback
     const sheet = getSheetByName(TICKETS_SHEET_NAME);
     const data = sheet.getDataRange().getValues();
     const headers = data[0].map(h => String(h).trim());
@@ -435,7 +733,7 @@ function apiLogin(username, password) {
   try {
       // Simple check for config existence
       if (!SPREADSHEET_ID) {
-        return { success: false, message: 'Chưa cấu hình Spreadsheet ID.' };
+        return { success: false, message: 'ChÆ°a cáº¥u hÃ¬nh Spreadsheet ID.' };
       }
 
       // Normalize inputs
@@ -478,7 +776,7 @@ function apiLogin(username, password) {
            };
       }
 
-      return { success: false, message: 'Sai tên đăng nhập hoặc mật khẩu. (Input: ' + cleanUser + ')' };
+      return { success: false, message: 'Sai tÃªn Ä‘Äƒng nháº­p hoáº·c máº­t kháº©u. (Input: ' + cleanUser + ')' };
   } catch (e) {
       return { success: false, message: 'Server Error: ' + e.toString() };
   }
@@ -544,28 +842,36 @@ function apiGetInitialData(requestingUsername) {
           });
       }
       
-      // Clean candidates data
+      // Clean candidates data with Smart Mapping
       result.candidates = candidates.map(function(c) {
         let obj = {};
+        
+        // Prepare lowercase keys for case-insensitive lookup
+        const cLower = {};
+        Object.keys(c).forEach(k => {
+          cLower[k.toString().toLowerCase().trim()] = c[k];
+        });
+
         Object.keys(CANDIDATE_ALIASES).forEach(key => {
-            if (c[key] !== undefined) {
-                obj[key] = String(c[key]);
-            } else {
-                const aliases = CANDIDATE_ALIASES[key] || [];
-                let found = false;
-                for (let a of aliases) {
-                    if (c[a] !== undefined) {
-                        obj[key] = String(c[a]);
-                        found = true;
-                        break;
-                    }
+            const aliases = CANDIDATE_ALIASES[key] || [];
+            const searchPool = [key, ...aliases].map(s => s.toLowerCase().trim());
+            
+            let val = '';
+            for (let s of searchPool) {
+                if (cLower[s] !== undefined) {
+                    val = cLower[s];
+                    break;
                 }
-                if (!found) obj[key] = '';
+            }
+
+            // Date Special Handling
+            if (val instanceof Date) {
+                obj[key] = val.toISOString();
+            } else {
+                obj[key] = val === null || val === undefined ? '' : String(val);
             }
         });
-        if (obj.Applied_Date && obj.Applied_Date instanceof Date) {
-            obj.Applied_Date = obj.Applied_Date.toISOString();
-        }
+        
         return obj;
       });
     } catch (e) {
@@ -574,16 +880,19 @@ function apiGetInitialData(requestingUsername) {
 
     // 3. Load other components with safety
     try {
-      result.stages = apiGetTableData('Stages') || [];
-      if (result.stages.length === 0) {
-          result.stages = [
-               {ID: 'S1', Stage_Name: 'Apply', Order: 1, Color: '#0d6efd'},
-               {ID: 'S2', Stage_Name: 'Interview', Order: 2, Color: '#fd7e14'},
-               {ID: 'S3', Stage_Name: 'Offer', Order: 3, Color: '#198754'},
-               {ID: 'S4', Stage_Name: 'Rejected', Order: 4, Color: '#dc3545'}
-          ];
-      }
-    } catch (e) { Logger.log('Error loading stages: ' + e.toString()); }
+      // Disabled global stages loading - transitioning to project-specific workflows
+      // Transitioning to Support both English and Vietnamese for Stages
+      result.stages = [
+           {ID: 'S1', Stage_Name: 'Ứng tuyển', Order: 1, Color: '#0d6efd'},
+           {ID: 'S2', Stage_Name: 'Sơ vấn', Order: 2, Color: '#6610f2'},
+           {ID: 'S3', Stage_Name: 'Phỏng vấn', Order: 3, Color: '#fd7e14'},
+           {ID: 'S4', Stage_Name: 'Xét duyệt hồ sơ', Order: 4, Color: '#0dcaf0'},
+           {ID: 'S5', Stage_Name: 'Phê duyệt nhận việc', Order: 5, Color: '#20c997'},
+           {ID: 'S6', Stage_Name: 'Mời nhận việc', Order: 6, Color: '#198754'},
+           {ID: 'S7', Stage_Name: 'Đã nhận việc', Order: 7, Color: '#28a745'},
+           {ID: 'S8', Stage_Name: 'Từ chối', Order: 8, Color: '#dc3545'}
+      ];
+    } catch (e) { Logger.log('Error loading stages fallback: ' + e.toString()); }
 
     try {
       const deptResult = apiGetDepartments();
@@ -636,28 +945,23 @@ function apiGetInitialData(requestingUsername) {
  */
 function apiGetCompanyInfo() {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_SETTINGS);
-    if (isConsolidated) {
-      const data = apiGetTableData('COMPANY'); // This will filter SYS_SETTINGS for COMPANY type
-      const config = {};
-      data.forEach(item => {
-        if (item.Key) config[item.Key] = item.Value_JSON || item.Value || '';
-      });
-      return { success: true, data: config };
-    }
-
-    // Legacy
     const sheet = getSheetByName(COMPANY_CONFIG_SHEET_NAME);
     if (!sheet) return { success: true, data: {} };
+    
     const data = sheet.getDataRange().getValues();
     if (data.length < 2) return { success: true, data: {} };
+    
     const config = {};
     for (let i = 1; i < data.length; i++) {
-        const key = data[i][0];
-        const value = data[i][1];
-        if (key) {
-           try { config[key] = JSON.parse(value); } catch (e) { config[key] = value; }
+      const key = data[i][0];
+      const value = data[i][1];
+      if (key) {
+        try {
+          config[key] = JSON.parse(value);
+        } catch (e) {
+          config[key] = value;
         }
+      }
     }
     return { success: true, data: config };
   } catch (e) {
@@ -666,81 +970,29 @@ function apiGetCompanyInfo() {
   }
 }
 
-/**
- * HELPER: Save or Update a record in a consolidated sheet
- */
-function saveConsolidatedRecord(sheetName, type, key, data, extra = '') {
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(sheetName);
-  if (!sheet) return false;
-  
-  const allData = sheet.getDataRange().getValues();
-  const headers = allData[0];
-  const typeIdx = headers.indexOf('Type');
-  const keyIdx = headers.indexOf('Key') !== -1 ? headers.indexOf('Key') : (headers.indexOf('Reference_ID') !== -1 ? headers.indexOf('Reference_ID') : (headers.indexOf('Username_ID') !== -1 ? headers.indexOf('Username_ID') : -1));
-  const jsonIdx = headers.indexOf('Value_JSON') !== -1 ? headers.indexOf('Value_JSON') : (headers.indexOf('Data_JSON') !== -1 ? headers.indexOf('Data_JSON') : (headers.indexOf('Content_JSON') !== -1 ? headers.indexOf('Content_JSON') : -1));
-  
-  if (typeIdx === -1 || keyIdx === -1 || jsonIdx === -1) {
-    Logger.log('Critical Error: Consolidated headers missing in ' + sheetName);
-    return false;
-  }
-
-  const jsonStr = typeof data === 'object' ? JSON.stringify(data) : String(data);
-  
-  // Try to find existing record
-  for (let i = 1; i < allData.length; i++) {
-    if (String(allData[i][typeIdx]).trim() === type && String(allData[i][keyIdx]).trim() === key) {
-      sheet.getRange(i + 1, jsonIdx + 1).setValue(jsonStr);
-      if (extra) {
-        const extraIdx = headers.indexOf('Extra_Info') !== -1 ? headers.indexOf('Extra_Info') : (headers.indexOf('Status') !== -1 ? headers.indexOf('Status') : -1);
-        if (extraIdx !== -1) sheet.getRange(i + 1, extraIdx + 1).setValue(extra);
-      }
-      return true;
-    }
-  }
-  
-  // Not found, append new
-  const newRow = new Array(headers.length).fill('');
-  newRow[typeIdx] = type;
-  newRow[keyIdx] = key;
-  newRow[jsonIdx] = jsonStr;
-  const extraRowIdx = headers.indexOf('Extra_Info') !== -1 ? headers.indexOf('Extra_Info') : (headers.indexOf('Status') !== -1 ? headers.indexOf('Status') : -1);
-  if (extraRowIdx !== -1) newRow[extraRowIdx] = extra;
-  
-  sheet.appendRow(newRow);
-  return true;
-}
-
 function apiSaveCompanyInfo(config) {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_SETTINGS);
-    
-    if (isConsolidated) {
-      for (const key in config) {
-        saveConsolidatedRecord(SYS_SETTINGS, 'COMPANY', key, config[key]);
-      }
-      return { success: true, message: 'Đã lưu cấu hình thành công' };
-    }
-
-    // Legacy Fallback
-    let sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(COMPANY_CONFIG_SHEET_NAME);
+    let sheet = getSheetByName(COMPANY_CONFIG_SHEET_NAME);
     if (!sheet) {
-      sheet = SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet(COMPANY_CONFIG_SHEET_NAME);
+      const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+      sheet = ss.insertSheet(COMPANY_CONFIG_SHEET_NAME);
       sheet.getRange('A1:B1').setValues([['Cài đặt', 'Giá trị']]).setFontWeight('bold');
     }
     
-    // ... (rest of legacy logic) ...
-    const existingRows = sheet.getDataRange().getValues();
-    const settingsMap = {};
-    for (let i = 1; i < existingRows.length; i++) {
-      if (existingRows[i][0]) settingsMap[existingRows[i][0]] = existingRows[i][1];
+    const data = [['Cài đặt', 'Giá trị']];
+    for (const key in config) {
+      let val = config[key];
+      if (typeof val === 'object') {
+        val = JSON.stringify(val);
+      }
+      data.push([key, val]);
     }
-    for (const key in config) settingsMap[key] = config[key];
-    const outputData = [['Cài đặt', 'Giá trị']];
-    for (const key in settingsMap) outputData.push([key, settingsMap[key]]);
-    sheet.clearContents();
-    if (outputData.length > 0) sheet.getRange(1, 1, outputData.length, 2).setValues(outputData);
     
-    return { success: true, message: 'Đã lưu cấu hình thành công' };
+    sheet.clearContents();
+    if (data.length > 0) {
+      sheet.getRange(1, 1, data.length, 2).setValues(data);
+    }
+    return { success: true, message: 'Đã lưu thông tin công ty thành công' };
   } catch (e) {
     Logger.log('ERROR apiSaveCompanyInfo: ' + e.toString());
     return { success: false, message: e.toString() };
@@ -749,272 +1001,48 @@ function apiSaveCompanyInfo(config) {
 
 
 // 4. DATABASE HELPERS
-// 4. DATABASE HELPERS
 function getSheetByName(name) {
   if (!SPREADSHEET_ID) return null;
   try {
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    // Standard mapping for consolidated sheets
-    const map = {
-      [CANDIDATE_SHEET_NAME]: CORE_CANDIDATES,
-      [COMPANY_CONFIG_SHEET_NAME]: SYS_SETTINGS,
-      'Stages': SYS_SETTINGS,
-      'Departments': SYS_SETTINGS,
-      'DATA_SOURCES': SYS_SETTINGS,
-      'RejectionReasons': SYS_SETTINGS,
-      'Email_Templates': SYS_RESOURCES,
-      'Jobs': SYS_RESOURCES,
-      'News': SYS_RESOURCES,
-      'Users': SYS_ACCOUNTS,
-      'Recruiters': SYS_ACCOUNTS,
-      'PROJECTS': CORE_RECRUITMENT,
-      'RECRUITMENT_TICKETS': CORE_RECRUITMENT,
-      'EVALUATIONS': CORE_RECRUITMENT,
-      'DATA_HOAT_DONG': SYSTEM_LOGS,
-      'Debug_Logs': SYSTEM_LOGS
-    };
-    
-    // Check if we are using consolidated mode (the new sheet exists)
-    const targetName = map[name] || name;
-    let sheet = ss.getSheetByName(targetName);
-    
-    // Fallback to legacy if target not found yet
-    if (!sheet && targetName !== name) {
-        sheet = ss.getSheetByName(name);
-    }
-    
-    return sheet;
+    return SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name);
   } catch (e) {
     return null;
   }
 }
 
-/**
- * PHASE 2: MIGRATION LOGIC
- */
-function apiMigrateToConsolidatedSheets() {
-  try {
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const migrateLog = [];
-    
-    // Helper to ensure sheet exists with headers
-    const ensureSheet = (name, headers) => {
-      let s = ss.getSheetByName(name);
-      if (!s) {
-        s = ss.insertSheet(name);
-        s.appendRow(['Type', ...headers]);
-        s.getRange(1, 1, 1, headers.length + 1).setFontWeight('bold').setBackground('#f1f5f9');
-      }
-      return s;
-    };
-
-    // 1. SYS_SETTINGS (Stages, Depts, Sources, Reasons)
-    const settingsSheet = ensureSheet(SYS_SETTINGS, ['Key', 'Value_JSON', 'Extra_Info']);
-    
-    // Departments need special care (Name in Key, Positions in JSON)
-    const legacyDepts = ss.getSheetByName('Departments') || ss.getSheetByName('CẤU HÌNH HỆ THỐNG');
-    if (legacyDepts) {
-      const data = legacyDepts.getDataRange().getValues();
-      if (data.length > 1) {
-        data.slice(1).forEach(row => {
-          const name = String(row[0]).trim();
-          if (name) {
-            const positions = row.slice(1).filter(p => String(p).trim() !== '');
-            settingsSheet.appendRow(['DEPT', name, JSON.stringify(positions), 'Migrated']);
-          }
-        });
-        migrateLog.push(`Migrated Departments to ${SYS_SETTINGS}`);
-      }
-    }
-
-    const simpleSettings = [
-      { legacy: 'Stages', type: 'STAGE' },
-      { legacy: 'DATA_SOURCES', type: 'SOURCE' },
-      { legacy: 'RejectionReasons', type: 'REJECTION' }
-    ];
-    simpleSettings.forEach(m => {
-      const legacySheet = ss.getSheetByName(m.legacy);
-      if (legacySheet) {
-        const data = legacySheet.getDataRange().getValues();
-        if (data.length > 1) {
-          data.slice(1).forEach(row => {
-            settingsSheet.appendRow([m.type, String(row[0]), JSON.stringify(row), 'Migrated']);
-          });
-          migrateLog.push(`Migrated ${m.legacy} to ${SYS_SETTINGS}`);
-        }
-      }
-    });
-
-    // Company Info (Key-Value pairs)
-    const compSheet = ss.getSheetByName(COMPANY_CONFIG_SHEET_NAME);
-    if (compSheet) {
-      const data = compSheet.getDataRange().getValues();
-      if (data.length > 1) {
-        data.slice(1).forEach(row => {
-           if (row[0]) settingsSheet.appendRow(['COMPANY', String(row[0]), JSON.stringify(row[1]), 'Migrated']);
-        });
-        migrateLog.push(`Migrated Company Info to ${SYS_SETTINGS}`);
-      }
-    }
-
-    // 2. SYS_ACCOUNTS (Users, Recruiters)
-    const accountsSheet = ensureSheet(SYS_ACCOUNTS, ['Username_ID', 'Full_Name', 'Email', 'Role_Position', 'Data_JSON']);
-    const accountsToMigrate = [
-      { legacy: 'Users', type: 'USER' },
-      { legacy: 'Recruiters', type: 'RECRUITER' }
-    ];
-    accountsToMigrate.forEach(m => {
-      const legacySheet = ss.getSheetByName(m.legacy);
-      if (legacySheet) {
-        const data = legacySheet.getDataRange().getValues();
-        if (data.length > 1) {
-          data.slice(1).forEach(row => {
-            accountsSheet.appendRow([m.type, row[0], row[1], row[2], row[4] || '', JSON.stringify(row)]);
-          });
-          migrateLog.push(`Migrated ${m.legacy} to ${SYS_ACCOUNTS}`);
-        }
-      }
-    });
-
-    // 3. CORE_RECRUITMENT (Projects, Tickets, Evaluations)
-    const recSheet = ensureSheet(CORE_RECRUITMENT, ['Reference_ID', 'Parent_ID', 'Subject_Title', 'Status', 'Data_JSON']);
-    const recToMigrate = [
-      { legacy: 'PROJECTS', type: 'PROJECT' },
-      { legacy: 'RECRUITMENT_TICKETS', type: 'TICKET' },
-      { legacy: 'EVALUATIONS', type: 'EVAL' }
-    ];
-    recToMigrate.forEach(m => {
-      const legacySheet = ss.getSheetByName(m.legacy);
-      if (legacySheet) {
-        const data = legacySheet.getDataRange().getValues();
-        if (data.length > 1) {
-          data.slice(1).forEach(row => {
-            recSheet.appendRow([m.type, row[0], row[1] || '', row[2] || '', row[6] || '', JSON.stringify(row)]);
-          });
-          migrateLog.push(`Migrated ${m.legacy} to ${CORE_RECRUITMENT}`);
-        }
-      }
-    });
-
-    // 4. SYS_RESOURCES (Jobs, News, Email_Templates)
-    const resSheet = ensureSheet(SYS_RESOURCES, ['Ref_ID', 'Name_Title', 'Category', 'Content_JSON']);
-    const resToMigrate = [
-      { legacy: 'Email_Templates', type: 'TEMPLATE' },
-      { legacy: 'Jobs', type: 'JOB' },
-      { legacy: 'News', type: 'NEWS' }
-    ];
-    resToMigrate.forEach(m => {
-      const legacySheet = ss.getSheetByName(m.legacy);
-      if (legacySheet) {
-        const data = legacySheet.getDataRange().getValues();
-        if (data.length > 1) {
-          data.slice(1).forEach(row => {
-            resSheet.appendRow([m.type, row[0], row[1] || '', m.type, JSON.stringify(row)]);
-          });
-          migrateLog.push(`Migrated ${m.legacy} to ${SYS_RESOURCES}`);
-        }
-      }
-    });
-
-    // 5. SYSTEM_LOGS (Activity, Debug)
-    const logSheet = ensureSheet(SYSTEM_LOGS, ['Timestamp', 'Actor', 'Action', 'Details', 'Ref_ID', 'Log_Type']);
-    const logsToMigrate = [
-      { legacy: 'DATA_HOAT_DONG', type: 'ACTIVITY' },
-      { legacy: 'Debug_Logs', type: 'DEBUG' }
-    ];
-    logsToMigrate.forEach(m => {
-        const legacySheet = ss.getSheetByName(m.legacy);
-        if (legacySheet) {
-          const data = legacySheet.getDataRange().getValues();
-          if (data.length > 1) {
-            data.slice(1).forEach(row => {
-               logSheet.appendRow([...row, m.type]);
-            });
-            migrateLog.push(`Migrated ${m.legacy} to ${SYSTEM_LOGS}`);
-          }
-        }
-    });
-
-    // 6. CORE_CANDIDATES
-    const legacyCandidates = ss.getSheetByName(CANDIDATE_SHEET_NAME);
-    if (legacyCandidates && !ss.getSheetByName(CORE_CANDIDATES)) {
-        legacyCandidates.setName(CORE_CANDIDATES);
-        migrateLog.push(`Renamed ${CANDIDATE_SHEET_NAME} to ${CORE_CANDIDATES}`);
-    }
-
-    logActivity('System', 'Migration', 'Đã chuyển đổi cấu trúc Sheet: ' + migrateLog.join(', '), '');
-    return { success: true, message: 'Hợp nhất thành công!', log: migrateLog };
-  } catch (e) {
-    return { success: false, message: 'Lỗi hợp nhất: ' + e.toString() };
-  }
-}
-
 function apiGetTableData(sheetName) {
   Logger.log('--- apiGetTableData called for: ' + sheetName);
-  
-  // 1. Resolve actual sheet and type filtering
-  const map = {
-    'Stages': { target: SYS_SETTINGS, type: 'STAGE' },
-    'Departments': { target: SYS_SETTINGS, type: 'DEPT' },
-    'DATA_SOURCES': { target: SYS_SETTINGS, type: 'SOURCE' },
-    'RejectionReasons': { target: SYS_SETTINGS, type: 'REJECTION' },
-    'PROJECTS': { target: CORE_RECRUITMENT, type: 'PROJECT' },
-    'RECRUITMENT_TICKETS': { target: CORE_RECRUITMENT, type: 'TICKET' },
-    'EVALUATIONS': { target: CORE_RECRUITMENT, type: 'EVAL' },
-    'Users': { target: SYS_ACCOUNTS, type: 'USER' },
-    'Recruiters': { target: SYS_ACCOUNTS, type: 'RECRUITER' },
-    'Email_Templates': { target: SYS_RESOURCES, type: 'TEMPLATE' },
-    'Jobs': { target: SYS_RESOURCES, type: 'JOB' },
-    'News': { target: SYS_RESOURCES, type: 'NEWS' }
-  };
-
-  const config = map[sheetName];
-  const actualSheetName = config ? config.target : (sheetName === CANDIDATE_SHEET_NAME ? CORE_CANDIDATES : sheetName);
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(actualSheetName);
-  
+  const sheet = getSheetByName(sheetName);
   if (!sheet) {
-    Logger.log('ERROR: Sheet not found: ' + actualSheetName);
+    Logger.log('ERROR: Sheet not found: ' + sheetName);
     return [];
   }
   
-  const data = sheet.getDataRange().getValues();
-  if (data.length < 2) return [];
+  const startRow = 2;
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
   
-  const headers = data[0].map(h => String(h).trim());
-  const typeIdx = headers.indexOf('Type');
-  const jsonIdx = headers.indexOf('Data_JSON') !== -1 ? headers.indexOf('Data_JSON') : (headers.indexOf('Content_JSON') !== -1 ? headers.indexOf('Content_JSON') : (headers.indexOf('Value_JSON') !== -1 ? headers.indexOf('Value_JSON') : -1));
+  Logger.log('Sheet found. lastRow: ' + lastRow + ', lastCol: ' + lastCol);
   
-  let rows = data.slice(1);
-  
-  // 2. Filter by Type if it's a consolidated sheet
-  if (config && config.type && typeIdx !== -1) {
-    rows = rows.filter(r => String(r[typeIdx]).trim() === config.type);
+  if (lastRow < startRow) {
+    Logger.log('No data rows (lastRow < 2)');
+    return [];
   }
   
-  // 3. Map to Objects
-  return rows.map(row => {
+  // Get Headers
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  Logger.log('Headers: ' + JSON.stringify(headers));
+  
+  // Get Data
+  const data = sheet.getRange(startRow, 1, lastRow - 1, lastCol).getValues();
+  Logger.log('Data rows retrieved: ' + data.length);
+  
+  return data.map(row => {
     let obj = {};
-    headers.forEach((h, i) => {
-      if (h) obj[h] = row[i];
+    headers.forEach((header, index) => {
+      const key = header.toString().trim();
+      if(key) obj[key] = row[index];
     });
-    
-    // 4. Handle JSON Data Column if exists
-    if (jsonIdx !== -1 && row[jsonIdx]) {
-      try {
-        const jsonData = JSON.parse(row[jsonIdx]);
-        // If it was a migrated flat row, we can merge or keep it. 
-        // For now, let's keep it clean: if JSON is an object, merge properties
-        if (typeof jsonData === 'object' && jsonData !== null && !Array.isArray(jsonData)) {
-           // Merging allows legacy code to find fields by name
-           Object.assign(obj, jsonData);
-        } else if (Array.isArray(jsonData)) {
-           obj['_list_data'] = jsonData; // Keep arrays safe
-        }
-      } catch (e) {
-        Logger.log('Skipping JSON parse for row: ' + e.toString());
-      }
-    }
-    
     return obj;
   });
 }
@@ -1152,7 +1180,8 @@ function ensureSheetStructure() {
       });
     }
 
-    // 2. STAGES (Management Tags)
+    // 2. STAGES (Legacy - Disabled)
+    /*
     let sSheet = ss.getSheetByName('Stages');
     if (!sSheet) {
       sSheet = ss.insertSheet('Stages');
@@ -1162,6 +1191,7 @@ function ensureSheetStructure() {
       sSheet.appendRow(['S3', 'Offer', 3, '#198754']);
       sSheet.appendRow(['S4', 'Rejected', 4, '#dc3545']);
     }
+    */
 
     // 3. DEPARTMENTS (Management Tags)
     let dSheet = ss.getSheetByName('Departments');
@@ -1418,9 +1448,9 @@ function apiCreateCandidate(formObject, fileData) {
     
     // LOG ACTIVITY
     const userEmail = normalizedData.User || Session.getActiveUser().getEmail() || 'Admin';
-    logActivity(userEmail, 'Thêm ứng viên', 'Thêm ứng viên mới: ' + normalizedData.Name, newId);
+    logActivity(userEmail, 'ThÃªm á»©ng viÃªn', `ThÃªm á»©ng viÃªn má»›i: ${normalizedData.Name}`, newId);
     
-    return { success: true, message: 'Thêm hồ sơ thành công!', data: apiGetInitialData(), candidateId: newId };
+    return { success: true, message: 'ThÃªm há»“ sÆ¡ thÃ nh cÃ´ng!', data: apiGetInitialData(), candidateId: newId };
   } catch (e) {
     Logger.log('apiCreateCandidate Error: ' + e.toString());
     return { success: false, message: 'Lá»—i server: ' + e.toString() };
@@ -1450,7 +1480,7 @@ function apiUpdateCandidateStatus(candidateId, newStage, rejectionData = null) {
         };
 
         const idIndex = findIdx('ID');
-        const stageIndex = findIdx('Stage'); // Vòng tuyển dụng
+        const stageIndex = findIdx('Stage'); // We want to update STAGE (VÃ²ng tuyá»ƒn dá»¥ng)
         
         const hireDateIndex = findIdx('Hire_Date');
         const rejectTypeIndex = findIdx('Rejection_Type');
@@ -1487,7 +1517,7 @@ function apiUpdateCandidateStatus(candidateId, newStage, rejectionData = null) {
                 // LOG ACTIVITY
                 const userEmail = Session.getActiveUser().getEmail() || 'Admin'; 
                 const candidateName = data[i][findIdx('Name')] || candidateId;
-                logActivity(userEmail, 'Chuyển vòng', 'Chuyển ứng viên ' + candidateName + ' sang vòng ' + newStage, candidateId);
+                logActivity(userEmail, 'Chuyá»ƒn vÃ²ng', `Chuyá»ƒn á»©ng viÃªn **${candidateName}** sang vÃ²ng **${newStage}**`, candidateId);
                 
                 return { success: true };
             }
@@ -1698,11 +1728,11 @@ function apiUpdateCandidate(candidateData, fileData) {
         if (candidateData.NewNote) {
             const userEmail = candidateData.User || Session.getActiveUser().getEmail() || 'Admin';
             const candidateName = getCandidateNameById(candidateData.ID);
-            logActivity(userEmail, 'Thêm ghi chú', `Thêm highlight cho ứng viên **${candidateName}**: ${candidateData.NewNote}`, candidateData.ID);
+            logActivity(userEmail, 'ThÃªm ghi chÃº', `ThÃªm highlight cho á»©ng viÃªn **${candidateName}**: ${candidateData.NewNote}`, candidateData.ID);
         } else {
              const userEmail = candidateData.User || Session.getActiveUser().getEmail() || 'Admin';
              const candidateName = getCandidateNameById(candidateData.ID);
-             logActivity(userEmail, 'Cập nhật hồ sơ', `Cập nhật thông tin chi tiết cho ứng viên **${candidateName}**`, candidateData.ID);
+             logActivity(userEmail, 'Cáº­p nháº­t há»“ sÆ¡', `Cáº­p nháº­t thÃ´ng tin chi tiáº¿t cho á»©ng viÃªn **${candidateName}**`, candidateData.ID);
         }
         
         Logger.log('Successfully updated candidate at row ' + (i + 1));
@@ -1710,7 +1740,7 @@ function apiUpdateCandidate(candidateData, fileData) {
         // Return updated data
         return {
           success: true,
-          message: 'Cập nhật thành công!',
+          message: 'Cáº­p nháº­t thÃ nh cÃ´ng!',
           data: apiGetInitialData() // Refresh all data
         };
       }
@@ -1751,7 +1781,7 @@ function apiDeleteCandidate(candidateId) {
         
         return {
           success: true,
-          message: 'Đã xóa ứng viên thành công!'
+          message: 'ÄÃ£ xÃ³a á»©ng viÃªn thÃ nh cÃ´ng!'
         };
       }
     }
@@ -1780,13 +1810,13 @@ function apiGetJobs() {
         const mappedJobs = jobs.map(j => {
             return {
                 ID: j.ID || j.id,
-                Title: j.Title || j['Vị trí'] || j['Tiêu đề'] || '',
-                Department: j.Department || j['Phòng ban'] || '',
-                Location: j.Location || j['Địa điểm'] || '',
-                Type: j.Type || j['Loại hình'] || '',
-                Status: j.Status || j['Trạng thái'] || '',
-                Description: j.Description || j['Mô tả'] || j['Mô tả công việc'] || '',
-                Created_Date: j.Created_Date || j['Ngày tạo'] || ''
+                Title: j.Title || j['Vá»‹ trÃ­'] || j['TiÃªu Ä‘á»'] || '',
+                Department: j.Department || j['PhÃ²ng ban'] || '',
+                Location: j.Location || j['Äá»‹a Ä‘iá»ƒm'] || '',
+                Type: j.Type || j['Loáº¡i hÃ¬nh'] || '',
+                Status: j.Status || j['Tráº¡ng thÃ¡i'] || '',
+                Description: j.Description || j['MÃ´ táº£'] || j['MÃ´ táº£ cÃ´ng viá»‡c'] || '',
+                Created_Date: j.Created_Date || j['NgÃ y táº¡o'] || ''
             };
         });
         return mappedJobs.reverse(); // Newest first
@@ -1828,30 +1858,49 @@ function apiDebugJobsV2() {
     }
 }
 
-function apiCreateJob(jobData) {
-  try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_RESOURCES);
-    const id = jobData.id || ('JOB_' + new Date().getTime());
-    
-    if (isConsolidated) {
-      saveConsolidatedRecord(SYS_RESOURCES, 'JOB', id, jobData);
-      return { success: true, message: 'Đã lưu tin tuyển dụng thành công (Hệ thống mới)' };
-    }
-    
-    // Legacy mapping
-    const sheet = getSheetByName('Jobs') || SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet('Jobs');
-    if (sheet.getLastColumn() === 0) {
-      sheet.appendRow(['ID', 'Title', 'Department', 'Location', 'Type', 'Status', 'Created_Date', 'Description']);
-    }
+function apiCreateJob(formObject) {
+    try {
+        let sheet = getSheetByName('Jobs');
+        const headers = ['ID', 'Title', 'Department', 'Position', 'Location', 'Type', 'Status', 'Created_Date', 'Description', 'TicketID'];
+        
+        if (!sheet) {
+             const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+             sheet = ss.insertSheet('Jobs');
+             sheet.appendRow(headers);
+        }
+        
+        // Handle empty sheet case
+        if (sheet.getLastColumn() === 0) {
+             sheet.appendRow(headers);
+        }
 
-    const row = [id, jobData.title, jobData.department, jobData.location, jobData.type, 'Open', new Date().toISOString().slice(0, 10), jobData.description];
-    sheet.appendRow(row);
-    return { success: true, message: 'Đã lưu tin tuyển dụng thành công' };
-  } catch (e) {
-    return { success: false, message: e.toString() };
-  }
+        const currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+        const newId = 'J' + new Date().getTime();
+        const createdDate = new Date().toISOString().slice(0, 10);
+
+        // Map data to headers dynamically
+        const rowData = currentHeaders.map(h => {
+            const head = h.toString().trim();
+            if (head === 'ID') return newId;
+            if (head === 'Title') return formObject.title || '';
+            if (head === 'Department') return formObject.department || '';
+            if (head === 'Position') return formObject.position || '';
+            if (head === 'Location') return formObject.location || '';
+            if (head === 'Type') return formObject.type || '';
+            if (head === 'Status') return 'Open';
+            if (head === 'Created_Date') return createdDate;
+            if (head === 'Description') return formObject.description || '';
+            if (head === 'TicketID') return formObject.ticketId || '';
+            return '';
+        });
+        
+        sheet.appendRow(rowData);
+        
+        return { success: true, message: 'Đã tạo tin tuyển dụng thành công!' };
+    } catch (e) {
+        return { success: false, message: e.toString() };
+    }
 }
-
 
 function apiDeleteJob(jobId) {
     return apiDeleteRow('Jobs', jobId);
@@ -1887,37 +1936,9 @@ function apiUpdateJobStatus(jobId, newStatus) {
     }
 }
 
-function apiUpdateJobV3(jobData) {
-  return apiCreateJob(jobData); // apiCreateJob now handles update via saveConsolidatedRecord
-}
-
 // Reuse generic delete if available, or implement simple one
 function apiDeleteRow(sheetName, id) {
     try {
-        const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_RESOURCES);
-        if (isConsolidated) {
-            const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_RESOURCES);
-            const data = sheet.getDataRange().getValues();
-            const headers = data[0];
-            const idIdx = headers.indexOf('Ref_ID');
-            const typeIdx = headers.indexOf('Type');
-
-            let recordType;
-            if (sheetName === 'Jobs') recordType = 'JOB';
-            else if (sheetName === 'Email_Templates') recordType = 'TEMPLATE';
-            else if (sheetName === 'News') recordType = 'NEWS';
-            else return { success: false, message: 'Unsupported sheet for consolidated delete' };
-
-            for (let i = 1; i < data.length; i++) {
-                if (data[i][typeIdx] === recordType && String(data[i][idIdx]) === String(id)) {
-                    sheet.deleteRow(i + 1);
-                    return { success: true, message: 'Đã xóa thành công (Hệ thống mới)' };
-                }
-            }
-            return { success: false, message: 'ID not found in consolidated system' };
-        }
-
-        // Legacy path
         const sheet = getSheetByName(sheetName);
         if (!sheet) return { success: false, message: 'Sheet not found' };
         
@@ -1930,7 +1951,7 @@ function apiDeleteRow(sheetName, id) {
         for (let i = 1; i < data.length; i++) {
             if (data[i][idIndex] == id) {
                 sheet.deleteRow(i + 1);
-                return { success: true, message: 'Đã xóa phòng ban' };
+                return { success: true, message: 'ÄÃ£ xÃ³a thÃ nh cÃ´ng' };
             }
         }
         return { success: false, message: 'ID not found' };
@@ -1942,45 +1963,26 @@ function apiDeleteRow(sheetName, id) {
 // [DELETED DUPLICATE apiGetOpenJobs]
 
 // 8. API: SETTINGS & ADMINISTRATION
+// 8. API: SETTINGS & ADMINISTRATION
 function apiGetSettings() {
-    let stages = apiGetTableData('Stages');
-    if(stages.length === 0) {
-      stages = [
-           {Stage_Name: 'Apply', Order: 1, Color: '#0d6efd'},
-           {Stage_Name: 'Interview', Order: 2, Color: '#fd7e14'},
-           {Stage_Name: 'Offer', Order: 3, Color: '#198754'},
-           {Stage_Name: 'Rejected', Order: 4, Color: '#dc3545'}
-      ];
-    }
+    // STAGES are now project-specific or defaulted.
+    const defaultStages = [
+         {Stage_Name: 'Apply', Order: 1, Color: '#0d6efd'},
+         {Stage_Name: 'Interview', Order: 2, Color: '#fd7e14'},
+         {Stage_Name: 'Offer', Order: 3, Color: '#198754'},
+         {Stage_Name: 'Rejected', Order: 4, Color: '#dc3545'}
+    ];
 
     return {
         users: apiGetTableData('Users'),
-        stages: stages,
+        stages: defaultStages, // Return defaults for compatibility
         departments: apiGetTableData('Departments'),
         companyInfo: apiGetCompanyInfo().data
     };
 }
 
 function apiSaveStages(stagesArray) {
-    try {
-        let sheet = getSheetByName('Stages');
-        if (!sheet) {
-            // Create Stages sheet if it doesn't exist
-            const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-            sheet = ss.insertSheet('Stages');
-        }
-        
-        sheet.clearContents();
-        sheet.appendRow(['ID', 'Stage_Name', 'Order', 'Color']); // Header
-        
-        stagesArray.forEach(s => {
-            sheet.appendRow([s.ID, s.Stage_Name, s.Order, s.Color]);
-        });
-        
-        return { success: true, message: 'Đã lưu cấu hình quy trình!' };
-    } catch(e) {
-        return { success: false, message: e.toString() };
-    }
+    return { success: false, message: 'Cấu hình quy trình chung đã bị bãi bỏ. Vui lòng cấu hình quy trình theo từng Dự án.' };
 }
 
 function apiCreateUser(user) {
@@ -1997,7 +1999,7 @@ function apiCreateUser(user) {
         const data = sheet.getDataRange().getValues();
         for(let i=1; i<data.length; i++) {
              if(data[i][0] == user.username) {
-                  return { success: false, message: 'Tên đăng nhập đã tồn tại' };
+                  return { success: false, message: 'TÃªn Ä‘Äƒng nháº­p Ä‘Ã£ tá»“n táº¡i' };
              }
         }
         
@@ -2010,7 +2012,7 @@ function apiCreateUser(user) {
             user.department,        // Col 6
             user.phone || ''        // Col 7
         ]);
-        return { success: true, message: 'Đã thêm người dùng' };
+        return { success: true, message: 'ÄÃ£ thÃªm ngÆ°á»i dÃ¹ng' };
     } catch(e) {
         return { success: false, message: e.toString() };
     }
@@ -2041,7 +2043,7 @@ function apiEditUser(user) {
                      // Safer to assume column exists or was added by getTableData logic
                 }
                 
-                return { success: true, message: 'Đã cập nhật thông tin user' };
+                return { success: true, message: 'ÄÃ£ cáº­p nháº­t thÃ´ng tin user' };
             }
         }
         return { success: false, message: 'User not found' };
@@ -2059,7 +2061,7 @@ function apiDeleteUser(username) {
         for(let i=1; i<data.length; i++) {
             if(data[i][0] == username) {
                 sheet.deleteRow(i+1);
-                return { success: true, message: 'Đã xóa vị trí' };
+                return { success: true, message: 'ÄÃ£ xÃ³a user' };
             }
         }
         return { success: false, message: 'User not found' };
@@ -2076,18 +2078,18 @@ function apiGetEmailTemplates() {
             sheet = ss.insertSheet('Email_Templates');
             sheet.appendRow(['ID', 'Name', 'Subject', 'Body']);
             // Add defaults
-            sheet.appendRow(['1', 'Offer Email', 'Mời nhận việc - [Candidate Name]', 'Chào [Name],\n\nChúc mừng bạn đã trúng tuyển...']);
-            sheet.appendRow(['2', 'Reject Email', 'Thông báo kết quả phỏng vấn', 'Chào [Name],\n\nCảm ơn bạn đã quan tâm...']);
-            sheet.appendRow(['3', 'Interview Invite', 'Mời phỏng vấn', 'Chào [Name],\n\nChúng tôi muốn mời bạn tham gia phỏng vấn...']);
+            sheet.appendRow(['1', 'Offer Email', 'Má»i nháº­n viá»‡c - [Candidate Name]', 'ChÃ o [Name],\n\nChÃºc má»«ng báº¡n Ä‘Ã£ trÃºng tuyá»ƒn...']);
+            sheet.appendRow(['2', 'Reject Email', 'ThÃ´ng bÃ¡o káº¿t quáº£ phá»ng váº¥n', 'ChÃ o [Name],\n\nCáº£m Æ¡n báº¡n Ä‘Ã£ quan tÃ¢m...']);
+            sheet.appendRow(['3', 'Interview Invite', 'Má»i phá»ng váº¥n', 'ChÃ o [Name],\n\nChÃºng tÃ´i muá»‘n má»i báº¡n tham gia phá»ng váº¥n...']);
         }
         
         // Handle empty/new sheet
         if (sheet.getLastColumn() === 0) {
             sheet.appendRow(['ID', 'Name', 'Subject', 'Body']);
             // Add defaults
-            sheet.appendRow(['1', 'Offer Email', 'Mời nhận việc - [Candidate Name]', 'Chào [Name],\n\nChúc mừng bạn đã trúng tuyển...']);
-            sheet.appendRow(['2', 'Reject Email', 'Thông báo kết quả phỏng vấn', 'Chào [Name],\n\nCảm ơn bạn đã quan tâm...']);
-            sheet.appendRow(['3', 'Interview Invite', 'Mời phỏng vấn', 'Chào [Name],\n\nChúng tôi muốn mời bạn tham gia phỏng vấn...']);
+            sheet.appendRow(['1', 'Offer Email', 'Má»i nháº­n viá»‡c - [Candidate Name]', 'ChÃ o [Name],\n\nChÃºc má»«ng báº¡n Ä‘Ã£ trÃºng tuyá»ƒn...']);
+            sheet.appendRow(['2', 'Reject Email', 'ThÃ´ng bÃ¡o káº¿t quáº£ phá»ng váº¥n', 'ChÃ o [Name],\n\nCáº£m Æ¡n báº¡n Ä‘Ã£ quan tÃ¢m...']);
+            sheet.appendRow(['3', 'Interview Invite', 'Má»i phá»ng váº¥n', 'ChÃ o [Name],\n\nChÃºng tÃ´i muá»‘n má»i báº¡n tham gia phá»ng váº¥n...']);
         }
         
         return apiGetTableData('Email_Templates');
@@ -2099,12 +2101,87 @@ function apiGetEmailTemplates() {
 // Redundant functions removed for cleanup
 
 
+
 // 6. RECRUITER MANAGEMENT
+const RECRUITER_SHEET_NAME = 'DATA_RECRUITERS';
 
 function apiGetRecruiters() {
+  Logger.log('=== GET RECRUITERS ===');
   try {
-    const data = apiGetTableData('Recruiters');
-    return { success: true, recruiters: data };
+    let sheet = getSheetByName(RECRUITER_SHEET_NAME);
+    
+    // Check/Create Sheet
+    if (!sheet) {
+        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+        sheet = ss.insertSheet(RECRUITER_SHEET_NAME);
+        // New Headers: ID, Name, Email, Position, JoinDate
+        sheet.getRange('A1:E1').setValues([['ID', 'TÃªn', 'Email', 'Chá»©c vá»¥', 'NgÃ y tham gia']]);
+        // Add sample data
+        const sampleId = 'REC' + new Date().getTime();
+        const today = new Date().toISOString().slice(0, 10);
+        sheet.getRange('A2:E2').setValues([[sampleId, 'Admin', 'admin@example.com', 'Quáº£n trá»‹ viÃªn', today]]);
+        return { 
+            success: true, 
+            recruiters: [{
+                id: sampleId,
+                name: 'Admin', 
+                email: 'admin@example.com',
+                position: 'Quáº£n trá»‹ viÃªn',
+                joinDate: today,
+                totalCandidates: 0
+            }] 
+        };
+    }
+    
+    // 1. Get Recruiters Data
+    const data = sheet.getDataRange().getValues();
+    const recruiters = [];
+    
+    // 2. Get Candidate Counts
+    const candidateSheet = getSheetByName(CANDIDATE_SHEET_NAME);
+    const candidateCounts = {}; // name -> count
+    
+    if (candidateSheet && candidateSheet.getLastRow() > 1) {
+        const candData = candidateSheet.getDataRange().getValues();
+        const headers = candData[0].map(h => h.toString().trim());
+        
+        // Find 'Recruiter' OR 'NgÆ°á»i phá»¥ trÃ¡ch' column
+        let recColIndex = headers.findIndex(h => h === 'Recruiter' || h === 'NgÆ°á»i phá»¥ trÃ¡ch' || h.toLowerCase() === 'recruiter');
+        
+        if (recColIndex > -1) {
+            for (let i = 1; i < candData.length; i++) {
+                let recName = candData[i][recColIndex];
+                if (recName) {
+                    recName = recName.toString().trim();
+                    candidateCounts[recName] = (candidateCounts[recName] || 0) + 1;
+                }
+            }
+        }
+    }
+
+    // 3. Map Recruiters
+    // Skip header (Row 1)
+    for (let i = 1; i < data.length; i++) {
+        const row = data[i];
+        let id = row[0];
+        let name = row[1];
+        let email = row[2];
+        let position = row[3] || '';
+        let joinDate = row[4] || '';
+        
+        if (name || id) {
+             const cleanName = name ? name.toString().trim() : '';
+             recruiters.push({
+                 id: id,
+                 name: name,
+                 email: email,
+                 position: position,
+                 joinDate: joinDate instanceof Date ? joinDate.toISOString().slice(0,10) : joinDate,
+                 totalCandidates: candidateCounts[cleanName] || 0
+             });
+        }
+    }
+    return { success: true, recruiters: recruiters };
   } catch (e) {
     Logger.log('Error getting recruiters: ' + e);
     return { success: false, message: e.toString(), recruiters: [] };
@@ -2112,105 +2189,121 @@ function apiGetRecruiters() {
 }
 
 function apiAddRecruiter(data) {
-  try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_ACCOUNTS);
-    const id = data.id || ('REC' + new Date().getTime());
-    
-    if (isConsolidated) {
-      const payload = {
-          Full_Name: data.name,
-          Email: data.email,
-          Role_Position: data.position || 'Recruiter',
-          Data_JSON: JSON.stringify(data)
-      };
-      saveConsolidatedRecord(SYS_ACCOUNTS, 'RECRUITER', id, payload);
-    } else {
-      const sheet = getSheetByName(RECRUITER_SHEET_NAME);
-      if (!sheet) return { success: false, message: 'Sheet not found' };
-      sheet.appendRow([id, data.name, data.email, data.phone || '', data.position || '', data.role || 'Recruiter', new Date().toISOString()]);
+    Logger.log('=== ADD RECRUITER ===');
+    try {
+        let sheet = getSheetByName(RECRUITER_SHEET_NAME);
+        if (!sheet) {
+            // Should be created by getRecruiters, but safe to check
+             return { success: false, message: 'Vui lÃ²ng táº£i láº¡i trang Ä‘á»ƒ khá»Ÿi táº¡o dá»¯ liá»‡u.' };
+        }
+        
+        // Data: { name, email, position, joinDate }
+        const id = 'REC' + new Date().getTime();
+        const row = [
+            id,
+            data.name,
+            data.email,
+            data.position,
+            data.joinDate
+        ];
+        
+        // Check duplicate NAME (optional, but good for linking)
+        const currentData = sheet.getDataRange().getValues();
+        for(let i=1; i<currentData.length; i++) {
+            if(currentData[i][1] === data.name) { // Column 1 is Name
+                return { success: false, message: 'TÃªn nhÃ¢n viÃªn Ä‘Ã£ tá»“n táº¡i: ' + data.name };
+            }
+        }
+        
+        sheet.appendRow(row);
+        return { success: true, message: 'ÄÃ£ thÃªm thÃ nh cÃ´ng' };
+    } catch (e) {
+        return { success: false, message: e.toString() };
     }
-    return { success: true, message: 'Đã thêm nhân sự' };
-  } catch (e) {
-    return { success: false, message: e.toString() };
-  }
 }
 
 function apiEditRecruiter(data) {
-  try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_ACCOUNTS);
-    if (isConsolidated) {
-       saveConsolidatedRecord(SYS_ACCOUNTS, 'RECRUITER', data.id, {
-          Full_Name: data.name,
-          Email: data.email,
-          Role_Position: data.position || 'Recruiter',
-          Data_JSON: JSON.stringify(data)
-       });
-    } else {
-       const sheet = getSheetByName(RECRUITER_SHEET_NAME);
-       const rows = sheet.getDataRange().getValues();
-       for(let i=1; i<rows.length; i++) {
-         if(rows[i][0] === data.id) {
-           sheet.getRange(i+1, 2, 1, 5).setValues([[data.name, data.email, data.phone || '', data.position || '', data.role || '']]);
-           break;
-         }
-       }
+    Logger.log('=== EDIT RECRUITER: ' + data.id + ' ===');
+    try {
+        const sheet = getSheetByName(RECRUITER_SHEET_NAME);
+        if (!sheet) return { success: false, message: 'Sheet not found' };
+        
+        const rows = sheet.getDataRange().getValues();
+        // Row 1 is header.
+        for (let i = 1; i < rows.length; i++) {
+            if (String(rows[i][0]) === String(data.id)) { // Column 0 is ID
+                // Found! Update content
+                // Columns: ID(0), Name(1), Email(2), Position(3), JoinDate(4)
+                
+                // Only update Name if it doesn't conflict? 
+                // For simplicity, allow update.
+                
+                sheet.getRange(i + 1, 2).setValue(data.name);    // Name (Col B)
+                sheet.getRange(i + 1, 3).setValue(data.email);   // Email (Col C)
+                sheet.getRange(i + 1, 4).setValue(data.position);// Position (Col D)
+                sheet.getRange(i + 1, 5).setValue(data.joinDate);// JoinDate (Col E)
+                
+                return { success: true, message: 'ÄÃ£ cáº­p nháº­t thÃ´ng tin' };
+            }
+        }
+        return { success: false, message: 'KhÃ´ng tÃ¬m tháº¥y ID nhÃ¢n viÃªn: ' + data.id };
+    } catch(e) {
+         return { success: false, message: 'Lá»—i: ' + e.toString() };
     }
-    return { success: true, message: 'Đã cập nhật nhân sự' };
-  } catch (e) {
-    return { success: false, message: e.toString() };
-  }
 }
 
 function apiDeleteRecruiter(id) {
-  try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_ACCOUNTS);
-    const targetSheetName = isConsolidated ? SYS_ACCOUNTS : RECRUITER_SHEET_NAME;
-    const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(targetSheetName);
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const keyIdx = isConsolidated ? headers.indexOf('Username_ID') : 0;
-    const typeIdx = headers.indexOf('Type');
-    
-    for (let i = 1; i < data.length; i++) {
-      if (isConsolidated) {
-         if (data[i][typeIdx] === 'RECRUITER' && data[i][keyIdx] === id) {
-           sheet.deleteRow(i + 1);
-           break;
-         }
-      } else if (data[i][0] === id) {
-        sheet.deleteRow(i + 1);
-        break;
-      }
+    Logger.log('=== DELETE RECRUITER ID: ' + id + ' ===');
+    try {
+        const sheet = getSheetByName(RECRUITER_SHEET_NAME);
+        if (!sheet) return { success: false, message: 'Sheet not found' };
+        
+        const data = sheet.getDataRange().getValues();
+        for (let i = 1; i < data.length; i++) {
+            // Check ID first (Column 0)
+            if (String(data[i][0]) === String(id)) {
+                sheet.deleteRow(i + 1);
+                return { success: true, message: 'ÄÃ£ xÃ³a nhÃ¢n viÃªn' };
+            }
+            // Fallback: Check Name (Column 1) for backward compatibility
+             if (String(data[i][1]) === String(id)) {
+                sheet.deleteRow(i + 1);
+                return { success: true, message: 'ÄÃ£ xÃ³a nhÃ¢n viÃªn (theo tÃªn)' };
+            }
+        }
+        return { success: false, message: 'KhÃ´ng tÃ¬m tháº¥y nhÃ¢n viÃªn' };
+    } catch (e) {
+        return { success: false, message: e.toString() };
     }
-    return { success: true, message: 'Đã xóa nhân sự' };
-  } catch (e) {
-    return { success: false, message: e.toString() };
-  }
 }
 
-
-// 7. EMAIL TEMPLATES
-
 function apiSaveEmailTemplate(data) {
+    Logger.log('=== SAVE EMAIL TEMPLATE ===');
     try {
-        const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_RESOURCES);
-        const id = data.id || ('TMP' + new Date().getTime());
+        const sheet = getSheetByName('Email_Templates');
+        if (!sheet) return { success: false, message: 'Sheet not found' };
         
-        if (isConsolidated) {
-            saveConsolidatedRecord(SYS_RESOURCES, 'TEMPLATE', id, data);
-        } else {
-            const sheet = getSheetByName('Email_Templates');
-            const rows = sheet.getDataRange().getValues();
-            for(let i=1; i<rows.length; i++) {
-                if(String(rows[i][0]) === String(id)) {
-                    sheet.getRange(i+1, 2, 1, 3).setValues([[data.name, data.subject, data.body]]);
-                    return { success: true, message: 'Đã cập nhật template' };
-                }
+        const rows = sheet.getDataRange().getValues();
+        // Check if ID exists (Column A is ID)
+        for (let i = 1; i < rows.length; i++) {
+            if (String(rows[i][0]) === String(data.id)) {
+                // Update
+                // Only update Name if provided, otherwise keep existing
+                if (data.name) sheet.getRange(i + 1, 2).setValue(data.name); 
+                sheet.getRange(i + 1, 3).setValue(data.subject);
+                sheet.getRange(i + 1, 4).setValue(data.body);
+                return { success: true, message: 'ÄÃ£ cáº­p nháº­t máº«u email' };
             }
-            sheet.appendRow([id, data.name, data.subject, data.body]);
         }
-        return { success: true, message: 'Đã lưu template' };
-    } catch (e) {
+        
+        // Add New
+        const newId = data.id || ('TPL' + new Date().getTime());
+        // Default name if missing
+        const newName = data.name || 'Máº«u má»›i (' + newId + ')';
+        sheet.appendRow([newId, newName, data.subject, data.body]);
+        
+        return { success: true, message: 'ÄÃ£ lÆ°u máº«u email má»›i' };
+    } catch(e) {
         return { success: false, message: e.toString() };
     }
 }
@@ -2224,19 +2317,19 @@ function apiDeleteEmailTemplate(id) {
         for (let i = 1; i < rows.length; i++) {
             if (String(rows[i][0]) === String(id)) {
                 sheet.deleteRow(i + 1);
-                return { success: true, message: 'Đã xóa mẫu email' };
+                return { success: true, message: 'ÄÃ£ xÃ³a máº«u email' };
             }
         }
-        return { success: false, message: 'Không tìm thấy ID mẫu' };
+        return { success: false, message: 'KhÃ´ng tÃ¬m tháº¥y ID máº«u' };
     } catch(e) {
         return { success: false, message: e.toString() };
     }
 }
 
 function apiSendCustomEmail(to, cc, bcc, subject, body, candidateId) {
-    Logger.log('=== SEND EMAIL === To: ' + to + ', CC: ' + cc + ', BCC: ' + bcc);
+    Logger.log(`=== SEND EMAIL === To: ${to}, CC: ${cc}, BCC: ${bcc}`);
     try {
-        if (!to) return { success: false, message: 'Thiếu địa chỉ người nhận' };
+        if (!to) return { success: false, message: 'Thiáº¿u Ä‘á»‹a chá»‰ ngÆ°á»i nháº­n' };
         
         const options = {
             to: to,
@@ -2255,13 +2348,13 @@ function apiSendCustomEmail(to, cc, bcc, subject, body, candidateId) {
         
         // LOG ACTIVITY
         const userEmail = Session.getActiveUser().getEmail() || 'Admin';
-        let detailMsg = 'Gửi email tới: ' + to + ' - ' + subject;
+        let detailMsg = `Gá»­i email tá»›i: ${to} - ${subject}`;
         if (candidateId) {
              const candidateName = getCandidateNameById(candidateId);
-             detailMsg = 'Đã gửi email "' + subject + '" đến ứng viên **' + candidateName + '**';
+             detailMsg = `ÄÃ£ gá»­i email "${subject}" Ä‘áº¿n á»©ng viÃªn **${candidateName}**`;
         }
         
-        logActivity(userEmail, 'Gửi Email', detailMsg, candidateId || '');
+        logActivity(userEmail, 'Gá»­i Email', detailMsg, candidateId || '');
         
         // NOTIFY CC & BCC USERS
         if (candidateId) {
@@ -2277,26 +2370,26 @@ function apiSendCustomEmail(to, cc, bcc, subject, body, candidateId) {
                     createNotification(
                         cleanEmail,
                         'Email',
-                        'Bạn được thêm vào email: "' + subject + '" gửi cho ' + candidateName,
+                        `Báº¡n Ä‘Æ°á»£c thÃªm vÃ o email: "${subject}" gá»­i cho ${candidateName}`,
                         candidateId
                     );
                 }
             });
         }
         
-        return { success: true, message: 'Email đã được gửi!' };
+        return { success: true, message: 'Email Ä‘Ã£ Ä‘Æ°á»£c gá»­i!' };
     } catch(e) {
         Logger.log('Email Error: ' + e.toString());
-        return { success: false, message: 'Gửi mail thất bại: ' + e.toString() };
+        return { success: false, message: 'Gá»­i mail tháº¥t báº¡i: ' + e.toString() };
     }
 }
 
-// CHẠY HÀM NÀY MỘT LẦN TRONG TRÌNH BIÊN TẬP ĐỂ CẤP QUYỀN GỬI EMAIL
+// CHáº Y HÃ€M NÃ€Y Má»˜T Láº¦N TRONG TRÃŒNH BIÃŠN Táº¬P Äá»‚ Cáº¤P QUYá»€N Gá»¬I EMAIL
 function testPermissions() {
-    console.log("Kiểm tra quyền...");
-    // Dòng này chỉ để kích hoạt hộp thoại cấp quyền
+    console.log("Kiá»ƒm tra quyá»n...");
+    // DÃ²ng nÃ y chá»‰ Ä‘á»ƒ kÃ­ch hoáº¡t há»™p thoáº¡i cáº¥p quyá»n
     var quota = MailApp.getRemainingDailyQuota();
-    console.log("Email Quota còn lại: " + quota);
+    console.log("Email Quota cÃ²n láº¡i: " + quota);
 }
 
 function apiCheckDuplicateCandidate(phone, email) {
@@ -2308,11 +2401,11 @@ function apiCheckDuplicateCandidate(phone, email) {
         const headers = data[0].map(h => h.toString().toLowerCase().trim());
         
         // Find columns
-        const phoneIndex = headers.findIndex(h => h === 'phone' || h === 'số điện thoại' || h === 'sđt');
+        const phoneIndex = headers.findIndex(h => h === 'phone' || h === 'sá»‘ Ä‘iá»‡n thoáº¡i' || h === 'sÄ‘t');
         const emailIndex = headers.findIndex(h => h === 'email');
-        const nameIndex = headers.findIndex(h => h === 'name' || h === 'họ và tên' || h === 'họ tên');
-        const dateIndex = headers.findIndex(h => h === 'applied_date' || h === 'ngày ứng tuyển');
-        const posIndex = headers.findIndex(h => h === 'position' || h === 'vị trí');
+        const nameIndex = headers.findIndex(h => h === 'name' || h === 'há» vÃ  tÃªn' || h === 'há» tÃªn');
+        const dateIndex = headers.findIndex(h => h === 'applied_date' || h === 'ngÃ y á»©ng tuyá»ƒn');
+        const posIndex = headers.findIndex(h => h === 'position' || h === 'vá»‹ trÃ­');
         
         if (phoneIndex === -1 && emailIndex === -1) return { success: false };
         
@@ -2332,7 +2425,7 @@ function apiCheckDuplicateCandidate(phone, email) {
             
             if (cleanPhone && rowPhone && cleanPhone === rowPhone) {
                 match = true;
-                matchType = 'Số điện thoại';
+                matchType = 'Sá»‘ Ä‘iá»‡n thoáº¡i';
             } else if (cleanEmail && rowEmail && cleanEmail === rowEmail) {
                 match = true;
                 matchType = 'Email';
@@ -2417,7 +2510,7 @@ function apiGetOpenJobs() {
 
 function apiTrackApplication(phone) {
     try {
-        if (!phone) return { success: false, message: 'Vui lòng nhập số điện thoại' };
+        if (!phone) return { success: false, message: 'Vui lÃ²ng nháº­p sá»‘ Ä‘iá»‡n thoáº¡i' };
         
         const candidates = apiGetTableData(CANDIDATE_SHEET_NAME);
         const cleanInput = String(phone).replace(/\D/g, '');
@@ -2471,7 +2564,7 @@ function apiSubmitApplicationPublic(data) {
             '',        // Experience
             '',        // Education
             '',        // Salary
-            'Ứng tuyển từ Website' // Notes
+            'á»¨ng tuyá»ƒn tá»« Website' // Notes
         ]);
         
         SpreadsheetApp.flush(); // Ensure data is written before reading in apiSendApplicationReceivedEmail
@@ -2484,14 +2577,14 @@ function apiSubmitApplicationPublic(data) {
                 const recipients = admins.map(u => u.Email).join(',');
                 MailApp.sendEmail({
                     to: recipients,
-                    subject: '[ATS] Ứng viên mới: ' + data.name + ' - ' + data.position,
+                    subject: '[ATS] á»¨ng viÃªn má»›i: ' + data.name + ' - ' + data.position,
                     htmlBody: `
-                        <h3>Có ứng viên mới ứng tuyển từ Website</h3>
-                        <p><strong>Họ tên:</strong> ${data.name}</p>
-                        <p><strong>Vị trí:</strong> ${data.position}</p>
-                        <p><strong>Số điện thoại:</strong> ${data.phone}</p>
+                        <h3>CÃ³ á»©ng viÃªn má»›i á»©ng tuyá»ƒn tá»« Website</h3>
+                        <p><strong>Há» tÃªn:</strong> ${data.name}</p>
+                        <p><strong>Vá»‹ trÃ­:</strong> ${data.position}</p>
+                        <p><strong>Sá»‘ Ä‘iá»‡n thoáº¡i:</strong> ${data.phone}</p>
                         <p><strong>CV Link:</strong> <a href="${data.cv_link}">${data.cv_link}</a></p>
-                        <p>Vui lòng đăng nhập hệ thống ATS để xem chi tiết.</p>
+                        <p>Vui lÃ²ng Ä‘Äƒng nháº­p há»‡ thá»‘ng ATS Ä‘á»ƒ xem chi tiáº¿t.</p>
                     `
                 });
             }
@@ -2507,7 +2600,7 @@ function apiSubmitApplicationPublic(data) {
             Logger.log('Failed to send auto-reply email: ' + autoReplyErr);
         }
 
-        return { success: true, message: 'Nộp hồ sơ thành công! Email xác nhận đã được gửi đến bạn.' };
+        return { success: true, message: 'Ná»™p há»“ sÆ¡ thÃ nh cÃ´ng! Email xÃ¡c nháº­n Ä‘Ã£ Ä‘Æ°á»£c gá»­i Ä‘áº¿n báº¡n.' };
 
     } catch(e) {
         return { success: false, message: e.toString() };
@@ -2551,6 +2644,44 @@ function apiGetJobsV3() {
     }
 }
 
+function apiUpdateJobV3(jobData) {
+    try {
+        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+        const sheet = ss.getSheetByName('Jobs');
+        if (!sheet) return { success: false, message: 'Sheet not found' };
+        
+        const data = sheet.getDataRange().getValues();
+        const headers = data[0];
+        
+        let rowIndex = -1;
+        for (let i = 1; i < data.length; i++) {
+            if (String(data[i][0]) === String(jobData.id)) {
+                rowIndex = i + 1; // 1-based row index
+                break;
+            }
+        }
+        
+        if (rowIndex === -1) return { success: false, message: 'Job ID not found: ' + jobData.id };
+        
+        const setVal = (colName, val) => {
+            const idx = findColumnIndex(headers, colName);
+            if (idx !== -1) sheet.getRange(rowIndex, idx + 1).setValue(val || '');
+        };
+
+        setVal('Title', jobData.title);
+        setVal('Department', jobData.department);
+        setVal('Position', jobData.position);
+        setVal('Location', jobData.location);
+        setVal('Type', jobData.type);
+        setVal('Description', jobData.description);
+        setVal('TicketID', jobData.ticketId);
+        
+        return { success: true, message: 'Cập nhật thành công!' };
+    } catch (e) {
+        return { success: false, message: 'Lỗi update: ' + e.toString() };
+    }
+}
+
 function apiGetOpenJobsV3() {
     try {
         const jobs = apiGetJobsV3();
@@ -2579,33 +2710,10 @@ function logActivity(user, action, details, refId) {
         }
         
         const timestamp = new Date();
-        // Ensure values are strings to prevent formatting issues
-        sheet.appendRow([timestamp, String(user), String(action), String(details), String(refId || '')]);
+        sheet.appendRow([timestamp, user, action, details, refId || '']);
         
     } catch (e) {
         Logger.log('Error logging activity: ' + e.toString());
-    }
-}
-
-/**
- * NEW: Cleanup Activity Logs with corrupted fonts
- */
-function apiCleanupActivityLog() {
-    try {
-        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-        const sheet = ss.getSheetByName('DATA_HOAT_DONG');
-        if (!sheet) return { success: true, message: 'No log sheet found' };
-        
-        const lastRow = sheet.getLastRow();
-        if (lastRow > 1) {
-            // Keep the header, clear everything else
-            sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
-        }
-        
-        logActivity('System', 'Dọn dẹp', 'Đã xóa toàn bộ nhật ký hoạt động cũ để sửa lỗi font chữ', '');
-        return { success: true, message: 'Đã dọn dẹp log hoạt động thành công.' };
-    } catch (e) {
-        return { success: false, message: e.toString() };
     }
 }
 
@@ -2616,7 +2724,7 @@ function getCandidateNameById(id) {
         const data = sheet.getDataRange().getValues();
         const headers = data[0];
         const idIndex = headers.findIndex(h => h.toString().toLowerCase() === 'id');
-        const nameIndex = headers.findIndex(h => h.toString().toLowerCase() === 'name' || h.toString().toLowerCase() === 'họ và tên');
+        const nameIndex = headers.findIndex(h => h.toString().toLowerCase() === 'name' || h.toString().toLowerCase() === 'há» vÃ  tÃªn');
         
         if (idIndex === -1 || nameIndex === -1) return 'Unknown';
         
@@ -2694,50 +2802,100 @@ function apiGetActivityLogs(limit) {
 
 // Get all departments and their positions
 function apiGetDepartments() {
-  Logger.log('=== GET DEPARTMENTS (Consolidated Aware) ===');
+  Logger.log('=== GET DEPARTMENTS ===');
+  
   try {
-    const data = apiGetTableData('Departments');
-    if (data.length === 0) {
-      // Return empty instead of creating legacy sheet to avoid confusion
-      return { success: true, departments: [] };
+    const sheet = getSheetByName(SETTINGS_SHEET_NAME);
+    
+    // If sheet doesn't exist, create it with sample data
+    if (!sheet) {
+      const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+      const newSheet = ss.insertSheet(SETTINGS_SHEET_NAME);
+      
+      // Set headers
+      newSheet.getRange('A1').setValue('PhÃ²ng ban');
+      newSheet.getRange('B1').setValue('Vá»‹ trÃ­ 1');
+      newSheet.getRange('C1').setValue('Vá»‹ trÃ­ 2');
+      newSheet.getRange('D1').setValue('Vá»‹ trÃ­ 3');
+      
+      // Add sample data
+      newSheet.getRange('A2').setValue('PhÃ²ng nhÃ¢n sá»±');
+      newSheet.getRange('B2').setValue('Tuyá»ƒn dá»¥ng');
+      newSheet.getRange('C2').setValue('ÄÃ o táº¡o');
+      
+      newSheet.getRange('A3').setValue('PhÃ²ng káº¿ toÃ¡n');
+      newSheet.getRange('B3').setValue('Káº¿ toÃ¡n trÆ°á»Ÿng');
+      newSheet.getRange('C3').setValue('Káº¿ toÃ¡n thuáº¿');
+      
+      Logger.log('Created new settings sheet with sample data');
+      
+      return {
+        success: true,
+        departments: [
+          { name: 'PhÃ²ng nhÃ¢n sá»±', positions: ['Tuyá»ƒn dá»¥ng', 'ÄÃ o táº¡o'] },
+          { name: 'PhÃ²ng káº¿ toÃ¡n', positions: ['Káº¿ toÃ¡n trÆ°á»Ÿng', 'Káº¿ toÃ¡n thuáº¿'] }
+        ]
+      };
     }
     
-    const departments = data.map(d => ({
-      name: d.Key || d['Phòng ban'] || '',
-      positions: d.positions || (d.Value_JSON ? JSON.parse(d.Value_JSON) : [])
-    })).filter(d => d.name !== '');
-
-    return { success: true, departments: departments };
+    const data = sheet.getDataRange().getValues();
+    const departments = [];
+    
+    // Skip header row (row 0)
+    for (let i = 1; i < data.length; i++) {
+      const deptName = data[i][0];
+      if (!deptName) continue; // Skip empty rows
+      
+      const positions = [];
+      // Collect all non-empty positions from columns B onwards
+      for (let j = 1; j < data[i].length; j++) {
+        const position = data[i][j];
+        if (position && position.toString().trim()) {
+          positions.push(position.toString().trim());
+        }
+      }
+      
+      departments.push({
+        name: deptName.toString().trim(),
+        positions: positions
+      });
+    }
+    
+    Logger.log('Found ' + departments.length + ' departments');
+    return { 
+        success: true, 
+        departments: departments,
+        debug: {
+            rows: data.length,
+            sheetName: SETTINGS_SHEET_NAME
+        }
+    };
+    
   } catch (e) {
-    Logger.log('ERROR apiGetDepartments: ' + e.toString());
-    return { success: false, message: e.toString(), departments: [] };
+    Logger.log('ERROR: ' + e.toString());
+    return { success: false, message: e.toString(), departments: [], stack: e.stack };
   }
 }
 
 // Add new department
 function apiAddDepartment(deptName) {
+  Logger.log('=== ADD DEPARTMENT: ' + deptName + ' ===');
+  
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_SETTINGS);
-    if (isConsolidated) {
-      const exists = apiGetTableData('Departments').some(d => (d.Key || d['Phòng ban']) === deptName);
-      if (exists) return { success: false, message: 'Phòng ban đã tồn tại' };
-      
-      saveConsolidatedRecord(SYS_SETTINGS, 'DEPT', deptName, []);
-      return { success: true, message: 'Đã thêm phòng ban' };
-    }
-    
-    // Legacy mapping
     let sheet = getSheetByName(SETTINGS_SHEET_NAME);
+    
+    // Create sheet if doesn't exist
     if (!sheet) {
-        sheet = SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet(SETTINGS_SHEET_NAME);
-        sheet.getRange('A1').setValue('Phòng ban');
+      const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+      sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
+      sheet.getRange('A1').setValue('PhÃ²ng ban');
     }
     
     // Check if department already exists
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       if (data[i][0] && data[i][0].toString().trim().toLowerCase() === deptName.toLowerCase()) {
-        return { success: false, message: 'Phòng ban đã tồn tại' };
+        return { success: false, message: 'PhÃ²ng ban Ä‘Ã£ tá»“n táº¡i' };
       }
     }
     
@@ -2746,7 +2904,7 @@ function apiAddDepartment(deptName) {
     sheet.getRange(lastRow + 1, 1).setValue(deptName);
     
     Logger.log('Added department at row ' + (lastRow + 1));
-    return { success: true, message: 'Đã thêm phòng ban' };
+    return { success: true, message: 'ÄÃ£ thÃªm phÃ²ng ban' };
     
   } catch (e) {
     Logger.log('ERROR: ' + e.toString());
@@ -2756,72 +2914,72 @@ function apiAddDepartment(deptName) {
 
 // Add position to department
 function apiAddPosition(deptName, position) {
+  Logger.log('=== ADD POSITION: ' + position + ' to ' + deptName + ' ===');
+  
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_SETTINGS);
-    if (isConsolidated) {
-      const depts = apiGetDepartments().departments;
-      const d = depts.find(dept => dept.name === deptName);
-      if (!d) return { success: false, message: 'Phòng ban không tồn tại' };
-      
-      if (!d.positions) d.positions = [];
-      if (d.positions.includes(position)) return { success: false, message: 'Vị trí đã tồn tại' };
-      
-      d.positions.push(position);
-      saveConsolidatedRecord(SYS_SETTINGS, 'DEPT', deptName, d.positions);
-      return { success: true, message: 'Đã thêm vị trí' };
+    const sheet = getSheetByName(SETTINGS_SHEET_NAME);
+    if (!sheet) {
+      return { success: false, message: 'Sheet not found' };
     }
     
-    // Legacy mapping
-    const sheet = getSheetByName(SETTINGS_SHEET_NAME);
-    if (!sheet) return { success: false, message: 'Sheet not found' };
     const data = sheet.getDataRange().getValues();
+    
+    // Find department row
     for (let i = 1; i < data.length; i++) {
       if (data[i][0] && data[i][0].toString().trim() === deptName) {
+        // Find next empty column in this row
         let emptyCol = -1;
-        for (let j = 1; j < data[i].length + 5; j++) {
-          if (!data[i][j] || !data[i][j].toString().trim()) { emptyCol = j + 1; break; }
+        for (let j = 1; j < data[i].length + 5; j++) { // Check a few extra columns
+          if (!data[i][j] || !data[i][j].toString().trim()) {
+            emptyCol = j + 1; // +1 for 1-indexed
+            break;
+          }
         }
-        sheet.getRange(i + 1, emptyCol || (data[i].length + 1)).setValue(position);
-        return { success: true, message: 'Đã thêm vị trí' };
+        
+        if (emptyCol === -1) {
+          // No empty column found in existing data, add to next column
+          emptyCol = data[i].length + 1;
+        }
+        
+        sheet.getRange(i + 1, emptyCol).setValue(position);
+        Logger.log('Added position at row ' + (i + 1) + ', col ' + emptyCol);
+        return { success: true, message: 'ÄÃ£ thÃªm vá»‹ trÃ­' };
       }
     }
-    return { success: false, message: 'Không tìm thấy phòng ban' };
+    
+    return { success: false, message: 'PhÃ²ng ban khÃ´ng tá»“n táº¡i' };
+    
   } catch (e) {
+    Logger.log('ERROR: ' + e.toString());
     return { success: false, message: e.toString() };
   }
 }
 
 // Delete department
 function apiDeleteDepartment(deptName) {
+  Logger.log('=== DELETE DEPARTMENT: ' + deptName + ' ===');
+  
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_SETTINGS);
-    if (isConsolidated) {
-      const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_SETTINGS);
-      const data = sheet.getDataRange().getValues();
-      const headers = data[0];
-      const typeIdx = headers.indexOf('Type');
-      const keyIdx = headers.indexOf('Key');
-      
-      for (let i = 1; i < data.length; i++) {
-        if (String(data[i][typeIdx]).trim() === 'DEPT' && String(data[i][keyIdx]).trim() === deptName) {
-          sheet.deleteRow(i + 1);
-          return { success: true, message: 'Đã xóa phòng ban' };
-        }
-      }
-      return { success: false, message: 'Không tìm thấy phòng ban' };
+    const sheet = getSheetByName(SETTINGS_SHEET_NAME);
+    if (!sheet) {
+      return { success: false, message: 'Sheet not found' };
     }
     
-    // Legacy mapping
-    const sheet = getSheetByName(SETTINGS_SHEET_NAME);
     const data = sheet.getDataRange().getValues();
+    
+    // Find and delete department row
     for (let i = 1; i < data.length; i++) {
       if (data[i][0] && data[i][0].toString().trim() === deptName) {
         sheet.deleteRow(i + 1);
-        return { success: true, message: 'Đã xóa phòng ban' };
+        Logger.log('Deleted department at row ' + (i + 1));
+        return { success: true, message: 'ÄÃ£ xÃ³a phÃ²ng ban' };
       }
     }
-    return { success: false, message: 'Không tìm thấy phòng ban' };
+    
+    return { success: false, message: 'PhÃ²ng ban khÃ´ng tá»“n táº¡i' };
+    
   } catch (e) {
+    Logger.log('ERROR: ' + e.toString());
     return { success: false, message: e.toString() };
   }
 }
@@ -2846,14 +3004,14 @@ function apiDeletePosition(deptName, position) {
           if (data[i][j] && data[i][j].toString().trim() === position) {
             sheet.getRange(i + 1, j + 1).setValue('');
             Logger.log('Deleted position at row ' + (i + 1) + ', col ' + (j + 1));
-            return { success: true, message: 'Đã xóa vị trí' };
+            return { success: true, message: 'ÄÃ£ xÃ³a vá»‹ trÃ­' };
           }
         }
-        return { success: false, message: 'Vị trí không tồn tại' };
+        return { success: false, message: 'Vá»‹ trÃ­ khÃ´ng tá»“n táº¡i' };
       }
     }
     
-    return { success: false, message: 'Phòng ban không tồn tại' };
+    return { success: false, message: 'PhÃ²ng ban khÃ´ng tá»“n táº¡i' };
     
   } catch (e) {
     Logger.log('ERROR: ' + e.toString());
@@ -2922,15 +3080,15 @@ function apiSendApplicationReceivedEmail(candidateId) {
         }
 
         // 2. Get/Create Template
-        let subject = `Xác nhận đã nhận hồ sơ ứng tuyển - ${candidate.Name} - ${candidate.Position}`;
+        let subject = `XÃ¡c nháº­n Ä‘Ã£ nháº­n há»“ sÆ¡ á»©ng tuyá»ƒn - ${candidate.Name} - ${candidate.Position}`;
         let body = `
-            <p>Chào ${candidate.Name},</p>
-            <p>ABC Holding xin chân thành cảm ơn bạn đã quan tâm và gửi hồ sơ ứng tuyển cho vị trí <strong>${candidate.Position}</strong>.</p>
-            <p>Chúng tôi xác nhận đã nhận được CV và hồ sơ của bạn. Bộ phận Tuyển dụng sẽ tiến hành đánh giá và phản hồi kết quả vòng loại hồ sơ tới bạn trong vòng 3-5 ngày làm việc tới.</p>
-            <p>Nếu hồ sơ phù hợp, chúng tôi sẽ liên hệ để sắp xếp buổi phỏng vấn.</p>
+            <p>ChÃ o ${candidate.Name},</p>
+            <p>ABC Holding xin chÃ¢n thÃ nh cáº£m Æ¡n báº¡n Ä‘Ã£ quan tÃ¢m vÃ  gá»­i há»“ sÆ¡ á»©ng tuyá»ƒn cho vá»‹ trÃ­ <strong>${candidate.Position}</strong>.</p>
+            <p>ChÃºng tÃ´i xÃ¡c nháº­n Ä‘Ã£ nháº­n Ä‘Æ°á»£c CV vÃ  há»“ sÆ¡ cá»§a báº¡n. Bá»™ pháº­n Tuyá»ƒn dá»¥ng sáº½ tiáº¿n hÃ nh Ä‘Ã¡nh giÃ¡ vÃ  pháº£n há»“i káº¿t quáº£ vÃ²ng loáº¡i há»“ sÆ¡ tá»›i báº¡n trong vÃ²ng 3-5 ngÃ y lÃ m viá»‡c tá»›i.</p>
+            <p>Náº¿u há»“ sÆ¡ phÃ¹ há»£p, chÃºng tÃ´i sáº½ liÃªn há»‡ Ä‘á»ƒ sáº¯p xáº¿p buá»•i phá»ng váº¥n.</p>
             <br>
-            <p>Trân trọng,</p>
-            <p><strong>Bộ phận Tuyển dụng công ty ABC Holding</strong></p>
+            <p>TrÃ¢n trá»ng,</p>
+            <p><strong>Bá»™ pháº­n Tuyá»ƒn dá»¥ng cÃ´ng ty ABC Holding</strong></p>
         `;
 
         logToSheet('Sending email to: ' + candidate.Email);
@@ -2990,48 +3148,74 @@ function apiGetNews() {
 
 function apiSaveNews(payload) {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_RESOURCES);
-    const id = payload.id || ('NEWS_' + new Date().getTime());
-    
-    if (isConsolidated) {
-      saveConsolidatedRecord(SYS_RESOURCES, 'NEWS', id, payload);
-    } else {
-      const sheet = getSheetByName('News');
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    let sheet = ss.getSheetByName('News');
+    if (!sheet) {
+      sheet = ss.insertSheet('News');
+      sheet.appendRow(['ID', 'Title', 'Image', 'Content', 'Date', 'Status']);
+    }
+
+    // 1. Upload New Files to Drive
+    let newImageUrls = [];
+    if (payload.newFiles && payload.newFiles.length > 0) {
+        // Use CV_FOLDER_ID or a hardcoded one for simplicity, or create if not exists
+        // Ideally we should have a separate folder, but let's reuse or find/create
+        // For robustness, let's just use CV_FOLDER_ID if available, or root
+        const folderId = (typeof CV_FOLDER_ID !== 'undefined' && CV_FOLDER_ID) ? CV_FOLDER_ID : '';
+        let folder;
+        if(folderId) {
+             folder = DriveApp.getFolderById(folderId);
+        } else {
+             folder = DriveApp.getRootFolder();
+        }
+
+        payload.newFiles.forEach(fileData => {
+            const blob = Utilities.newBlob(Utilities.base64Decode(fileData.data), fileData.type, fileData.name);
+            const file = folder.createFile(blob);
+            file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+            // Use thumbnail link which is more reliable for embedding
+            // sz=w4000 requests a large version (up to 4000px width)
+            newImageUrls.push(`https://drive.google.com/thumbnail?id=${file.getId()}&sz=w4000`);
+        });
+    }
+
+    // 2. Combine with Existing Images
+    const currentUrls = payload.currentImages ? payload.currentImages.split(/[\n,;]+/).map(s => s.trim()).filter(s => s) : [];
+    const finalImageString = [...currentUrls, ...newImageUrls].join('\n');
+
+    // 3. Save to Sheet
+    if (payload.id) {
+      // Update
       const data = sheet.getDataRange().getValues();
       let rowIndex = -1;
       for (let i = 1; i < data.length; i++) {
-        if (String(data[i][0]) === String(id)) { rowIndex = i + 1; break; }
-      }
-      
-      // 1. Upload New Files to Drive (only for legacy path if not consolidated)
-      let newImageUrls = [];
-      if (payload.newFiles && payload.newFiles.length > 0) {
-          const folderId = (typeof CV_FOLDER_ID !== 'undefined' && CV_FOLDER_ID) ? CV_FOLDER_ID : '';
-          let folder;
-          if(folderId) {
-               folder = DriveApp.getFolderById(folderId);
-          } else {
-               folder = DriveApp.getRootFolder();
-          }
-
-          payload.newFiles.forEach(fileData => {
-              const blob = Utilities.newBlob(Utilities.base64Decode(fileData.data), fileData.type, fileData.name);
-              const file = folder.createFile(blob);
-              file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-              newImageUrls.push(`https://drive.google.com/thumbnail?id=${file.getId()}&sz=w4000`);
-          });
+        if (String(data[i][0]) === String(payload.id)) {
+          rowIndex = i + 1;
+          break;
+        }
       }
 
-      // 2. Combine with Existing Images
-      const currentUrls = payload.currentImages ? payload.currentImages.split(/[\n,;]+/).map(s => s.trim()).filter(s => s) : [];
-      const finalImageString = [...currentUrls, ...newImageUrls].join('\n');
-
-      const row = [id, payload.title, finalImageString, payload.content, new Date(), payload.status];
       if (rowIndex !== -1) {
-        sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+        sheet.getRange(rowIndex, 2).setValue(payload.title);
+        sheet.getRange(rowIndex, 3).setValue(finalImageString);
+        sheet.getRange(rowIndex, 4).setValue(payload.content);
+        sheet.getRange(rowIndex, 5).setValue(new Date()); // Update Date
+        sheet.getRange(rowIndex, 6).setValue(payload.status);
       } else {
-        sheet.appendRow(row);
+        return { success: false, message: 'News not found to update' };
       }
+    } else {
+      // Create
+      const newId = 'NEWS_' + new Date().getTime();
+      const date = new Date();
+      sheet.appendRow([
+        newId,
+        payload.title,
+        finalImageString,
+        payload.content,
+        date,
+        payload.status
+      ]);
     }
     return { success: true };
   } catch (e) {
@@ -3041,25 +3225,25 @@ function apiSaveNews(payload) {
 
 function apiDeleteNews(id) {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SYS_RESOURCES);
-    const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(isConsolidated ? SYS_RESOURCES : 'News');
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName('News');
+    if (!sheet) return { success: false, message: 'Sheet not found' };
+
     const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const idIdx = isConsolidated ? headers.indexOf('Ref_ID') : 0;
-    const typeIdx = headers.indexOf('Type');
-    
+    let rowIndex = -1;
     for (let i = 1; i < data.length; i++) {
-      if (isConsolidated) {
-        if (data[i][typeIdx] === 'NEWS' && String(data[i][idIdx]) === String(id)) {
-          sheet.deleteRow(i + 1);
-          return { success: true };
+        if (String(data[i][0]) === String(id)) {
+            rowIndex = i + 1;
+            break;
         }
-      } else if (String(data[i][0]) === String(id)) {
-        sheet.deleteRow(i + 1);
-        return { success: true };
-      }
     }
-    return { success: false, message: 'ID not found' };
+
+    if (rowIndex !== -1) {
+        sheet.deleteRow(rowIndex);
+        return { success: true };
+    } else {
+        return { success: false, message: 'ID not found' };
+    }
   } catch(e) {
     return { success: false, message: e.toString() };
   }
@@ -3219,39 +3403,6 @@ function apiCreateEvaluationRequest(candidateId, managerEmails, recruiterEmail, 
 
 function apiSubmitEvaluation(evalId, scores, result, comment, additionalData) {
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CORE_RECRUITMENT);
-    
-    if (isConsolidated) {
-      // 1. Get existing eval
-      const evals = apiGetTableData('EVALUATIONS');
-      const evalObj = evals.find(e => (e.Reference_ID || e.ID) === evalId);
-      if (!evalObj) return { success: false, message: 'Evaluation not found' };
-      
-      // 2. Update fields
-      evalObj.status = 'Completed';
-      evalObj.finalResult = result;
-      evalObj.managerComment = comment;
-      evalObj.completedAt = new Date().toISOString();
-      evalObj.scores = scores; // Object/Array
-      if (additionalData) Object.assign(evalObj, additionalData);
-      
-      // 3. Save
-      saveConsolidatedRecord(CORE_RECRUITMENT, 'EVAL', evalId, evalObj, 'Completed');
-      
-      // 4. Notify (assuming recruiter email is in evalObj)
-      const recEmail = evalObj.Recruiter_Email || evalObj.recruiterEmail;
-      if (recEmail && MailApp.getRemainingDailyQuota() > 0) {
-         MailApp.sendEmail({
-           to: recEmail,
-           subject: 'Kết quả đánh giá: ' + (evalObj.Candidate_Name || evalId) + ' - ' + result,
-           body: `Kết quả: ${result}\nNhận xét: ${comment}`
-         });
-      }
-      logActivity(Session.getActiveUser().getEmail(), 'Hoàn thành đánh giá', `Đã chấm điểm cho ứng viên ${evalObj.Candidate_Name || evalId} - Kết quả: ${result}`, evalObj.Candidate_ID || '');
-      return { success: true, message: 'Đã nộp đánh giá thành công (Hệ thống mới)' };
-    }
-
-    // Legacy fallback
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     const sheet = ss.getSheetByName(EVALUATION_SHEET_NAME);
     if (!sheet) return { success: false, message: 'Evaluation sheet not found' };
@@ -3345,56 +3496,8 @@ function apiGetPendingEvaluations(managerKey) {
 }
 
 function apiGetEvaluationsList(searchKey, role) {
+  logToSheet(`apiGetEvaluationsList started. User: ${searchKey}, Role: ${role}`);
   try {
-    const isConsolidated = !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CORE_RECRUITMENT);
-
-    if (isConsolidated) {
-      const data = apiGetTableData('EVALUATIONS');
-      // Filter by searchKey (email/username) and role if needed
-      let filtered = data;
-      if (searchKey) {
-        const searchVal = String(searchKey || '').toLowerCase().trim();
-        const roleNorm = String(role || '').toLowerCase().trim();
-
-        // Lookup extra user details for matching (matching by Email, Username, or Name)
-        let userDetails = { emails: [searchVal], names: [] };
-        try {
-            const users = apiGetTableData('Users');
-            const userFound = users.find(u => {
-                const uE = String(u.Email || '').toLowerCase().trim();
-                const uU = String(u.Username || '').toLowerCase().trim();
-                const uF = String(u.Full_Name || '').toLowerCase().trim();
-                return uE === searchVal || uU === searchVal || uF === searchVal;
-            });
-            if (userFound) {
-                if (userFound.Email) userDetails.emails.push(String(userFound.Email).toLowerCase().trim());
-                if (userFound.Username) userDetails.emails.push(String(userFound.Username).toLowerCase().trim());
-                if (userFound.Full_Name) userDetails.names.push(String(userFound.Full_Name).toLowerCase().trim());
-            }
-        } catch (e) {}
-
-        filtered = data.filter(e => {
-          const recEmail = String(e.Recruiter_Email || '').toLowerCase().trim();
-          const mgrEmail = String(e.Manager_Email || '').toLowerCase().trim();
-          const candidateName = String(e.Candidate_Name || '').toLowerCase().trim();
-
-          if (roleNorm === 'admin') {
-              return true;
-          } else if (roleNorm === 'manager') {
-              return userDetails.emails.includes(mgrEmail) || userDetails.names.includes(mgrEmail);
-          } else if (roleNorm === 'recruiter') {
-              return userDetails.emails.includes(recEmail) || userDetails.names.includes(recEmail);
-          } else {
-              // Default for other roles or general search
-              return userDetails.emails.includes(recEmail) || userDetails.emails.includes(mgrEmail) || candidateName.includes(searchVal);
-          }
-        });
-      }
-      return filtered.reverse(); // Assuming latest first
-    }
-
-    // Legacy fallback
-    logToSheet(`apiGetEvaluationsList started. User: ${searchKey}, Role: ${role}`);
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     let sheet = ss.getSheetByName(EVALUATION_SHEET_NAME);
     if (!sheet) {
@@ -3542,7 +3645,7 @@ function apiBulkUploadCandidates(filesData, source, stage) {
         
         // Default values
         if (!source) source = 'Bulk Import';
-        if (!stage) stage = 'New'; // Or 'Mới' / 'Ứng tuyển' depending on config
+        if (!stage) stage = 'New'; // Or 'Má»›i' / 'á»¨ng tuyá»ƒn' depending on config
 
         filesData.forEach(file => {
             try {
@@ -3575,7 +3678,7 @@ function apiBulkUploadCandidates(filesData, source, stage) {
                 // Better approach: Read headers first, then map.
                 // For performance in bulk, reading headers once is fine.
                 
-                // Simplified assumptions based on standard 'DATA ỨNG VIÊN'
+                // Simplified assumptions based on standard 'DATA á»¨NG VIÃŠN'
                 // [ID, Name, Email, Phone, Position, Department, Source, Recruiter, Manager, Status, CV_Link, Applied_Date, Notes, ...]
                 
                 // Let's try to reuse `apiCreateCandidate` logic internally? 
@@ -3645,7 +3748,7 @@ function apiGetCandidateSources() {
 }
 
 function apiAddCandidateSource(sourceName) {
-    if (!sourceName) return { success: false, message: 'Tên nguồn không được để trống' };
+    if (!sourceName) return { success: false, message: 'TÃƒÂªn nguÃ¡Â»â€œn khÃƒÂ´ng Ã„â€˜Ã†Â°Ã¡Â»Â£c Ã„â€˜Ã¡Â»Æ’ trÃ¡Â»â€˜ng' };
     try {
         const sheet = getSourceSheet();
         const data = sheet.getDataRange().getValues();
@@ -3654,12 +3757,12 @@ function apiAddCandidateSource(sourceName) {
         const cleanName = sourceName.trim().toLowerCase();
         for (let i = 1; i < data.length; i++) {
             if (String(data[i][0]).trim().toLowerCase() === cleanName) {
-                return { success: false, message: 'Nguồn này đã tồn tại' };
+                return { success: false, message: 'NguÃ¡Â»â€œn nÃƒÂ y Ã„â€˜ÃƒÂ£ tÃ¡Â»â€œn tÃ¡ÂºÂ¡i' };
             }
         }
         
         sheet.appendRow([sourceName.trim(), new Date()]);
-        return { success: true, message: 'Đã thêm nguồn mới' };
+        return { success: true, message: 'Ã„ÂÃƒÂ£ thÃƒÂªm nguÃ¡Â»â€œn mÃ¡Â»â€ºi' };
     } catch (e) {
         return { success: false, message: e.toString() };
     }
@@ -3674,17 +3777,17 @@ function apiDeleteCandidateSource(sourceName) {
         for (let i = 1; i < data.length; i++) {
             if (String(data[i][0]).trim().toLowerCase() === cleanName) {
                 sheet.deleteRow(i + 1);
-                return { success: true, message: 'Đã xóa nguồn' };
+                return { success: true, message: 'Ã„ÂÃƒÂ£ xÃƒÂ³a nguÃ¡Â»â€œn' };
             }
         }
-        return { success: false, message: 'Không tìm thấy nguồn để xóa' };
+        return { success: false, message: 'KhÃƒÂ´ng tÃƒÂ¬m thÃ¡ÂºÂ¥y nguÃ¡Â»â€œn Ã„â€˜Ã¡Â»Æ’ xÃƒÂ³a' };
     } catch (e) {
         return { success: false, message: e.toString() };
     }
 }
 
 function apiEditCandidateSource(oldName, newName) {
-    if (!oldName || !newName) return { success: false, message: 'Tên nguồn không được để trống' };
+    if (!oldName || !newName) return { success: false, message: 'TÃƒÂªn nguÃ¡Â»â€œn khÃƒÂ´ng Ã„â€˜Ã†Â°Ã¡Â»Â£c Ã„â€˜Ã¡Â»Æ’ trÃ¡Â»â€˜ng' };
     try {
         const sheet = getSourceSheet();
         const data = sheet.getDataRange().getValues();
@@ -3694,7 +3797,7 @@ function apiEditCandidateSource(oldName, newName) {
         // Check if new name already exists (and is not the old name)
         for (let i = 1; i < data.length; i++) {
             if (String(data[i][0]).trim().toLowerCase() === cleanNew) {
-                return { success: false, message: 'Tên nguồn mới đã tồn tại' };
+                return { success: false, message: 'TÃƒÂªn nguÃ¡Â»â€œn mÃ¡Â»â€ºi Ã„â€˜ÃƒÂ£ tÃ¡Â»â€œn tÃ¡ÂºÂ¡i' };
             }
         }
         
@@ -3702,10 +3805,10 @@ function apiEditCandidateSource(oldName, newName) {
         for (let i = 1; i < data.length; i++) {
             if (String(data[i][0]).trim().toLowerCase() === cleanOld) {
                 sheet.getRange(i + 1, 1).setValue(newName.trim());
-                return { success: true, message: 'Đã cập nhật nguồn' };
+                return { success: true, message: 'Ã„ÂÃƒÂ£ cÃ¡ÂºÂ­p nhÃ¡ÂºÂ­t nguÃ¡Â»â€œn' };
             }
         }
-        return { success: false, message: 'Không tìm thấy nguồn cần sửa' };
+        return { success: false, message: 'KhÃƒÂ´ng tÃƒÂ¬m thÃ¡ÂºÂ¥y nguÃ¡Â»â€œn cÃ¡ÂºÂ§n sÃ¡Â»Â­a' };
     } catch (e) {
         return { success: false, message: e.toString() };
     }
@@ -3730,7 +3833,7 @@ function apiImportFromSheet(importType, data, source, stage) {
             try {
                srcSS = SpreadsheetApp.openByUrl(data);
             } catch(e) {
-               return { success: false, message: 'Không thể mở link Google Sheet. Hãy đảm bảo quyền truy cập.' };
+               return { success: false, message: 'KhÃƒÂ´ng thÃ¡Â»Æ’ mÃ¡Â»Å¸ link Google Sheet. HÃƒÂ£y Ã„â€˜Ã¡ÂºÂ£m bÃ¡ÂºÂ£o quyeÃŒÂ£`n truy cÃ¡ÂºÂ­p.' };
             }
         } else if (importType === 'FILE') {
             // Check file type based on name or mime
@@ -3746,7 +3849,7 @@ function apiImportFromSheet(importType, data, source, stage) {
                      // Mock a "Sheet" object structure or just use array direct
                      srcData = parsedCsv;
                  } catch (e) {
-                     return { success: false, message: 'Lỗi đọc file CSV: ' + e.toString() };
+                     return { success: false, message: 'Lá»—i Ä‘á»c file CSV: ' + e.toString() };
                  }
             } else {
                 // EXCEL (.xlsx) Handling
@@ -3760,9 +3863,9 @@ function apiImportFromSheet(importType, data, source, stage) {
                     srcSS = SpreadsheetApp.openById(newFile.id);
                 } catch (e) {
                     if (e.toString().includes('Drive is not defined')) {
-                        return { success: false, message: 'Lỗi: Hệ thống chưa bật "Advanced Drive Service" để đọc file Excel (.xlsx). \n\nGIẢI PHÁP:\n1. Lưu file Excel thành đuôi .csv (File > Save As > CSV).\n2. Hoặc dán Link Google Sheet.' };
+                        return { success: false, message: 'Lá»—i: Há»‡ thá»‘ng chÆ°a báº­t "Advanced Drive Service" Ä‘á»ƒ Ä‘á»c file Excel (.xlsx). \n\nGIáº¢I PHÃP:\n1. LÆ°u file Excel thÃ nh Ä‘uÃ´i .csv (File > Save As > CSV).\n2. Hoáº·c dÃ¡n Link Google Sheet.' };
                     }
-                    return { success: false, message: 'Lỗi xử lý file Excel: ' + e.toString() };
+                    return { success: false, message: 'Lá»—i xá»­ lÃ½ file Excel: ' + e.toString() };
                 }
             }
         }
@@ -3777,7 +3880,7 @@ function apiImportFromSheet(importType, data, source, stage) {
             }
         }
         
-        if (!srcData || srcData.length < 2) return { success: false, message: 'File không có dữ liệu (ít nhất phải có 1 dòng tiêu đề và 1 dòng dữ liệu).' };
+        if (!srcData || srcData.length < 2) return { success: false, message: 'File khÃ´ng cÃ³ dá»¯ liá»‡u (Ã­t nháº¥t pháº£i cÃ³ 1 dÃ²ng tiÃªu Ä‘á» vÃ  1 dÃ²ng dá»¯ liá»‡u).' };
         
         const srcHeaders = srcData[0].map(h => String(h).toLowerCase().trim());
         
@@ -3793,31 +3896,31 @@ function apiImportFromSheet(importType, data, source, stage) {
         };
         
         const map = {};
-        map['Name'] = findCol(['name', 'tên', 'họ và tên', 'họ tên']);
-        map['Email'] = findCol(['email', 'thư', 'mail']);
-        map['Phone'] = findCol(['phone', 'số điện thoại', 'sđt', 'tel', 'mobile', 'di động']);
-        map['Position'] = findCol(['position', 'vị trí', 'chức danh', 'job']);
-        map['Department'] = findCol(['department', 'phòng', 'phòng ban', 'bộ phận']);
-        map['Stage'] = findCol(['stage', 'giai đoạn', 'status code']); 
-        map['Status'] = findCol(['status', 'trạng thái', 'tình trạng']);
-        map['CV_Link'] = findCol(['cv', 'link', 'hồ sơ', 'drive']);
-        map['Applied_Date'] = findCol(['applied_date', 'ngày ứng tuyển', 'date']);
+        map['Name'] = findCol(['name', 'tÃªn', 'há» vÃ  tÃªn', 'há» tÃªn']);
+        map['Email'] = findCol(['email', 'thÆ°', 'mail']);
+        map['Phone'] = findCol(['phone', 'sá»‘ Ä‘iá»‡n thoáº¡i', 'sÄ‘t', 'tel', 'mobile', 'di Ä‘á»™ng']);
+        map['Position'] = findCol(['position', 'vá»‹ trÃ­', 'chá»©c danh', 'job']);
+        map['Department'] = findCol(['department', 'phÃ²ng', 'phÃ²ng ban', 'bá»™ pháº­n']);
+        map['Stage'] = findCol(['stage', 'giai Ä‘oáº¡n', 'status code']); 
+        map['Status'] = findCol(['status', 'tráº¡ng thÃ¡i', 'tÃ¬nh tráº¡ng']);
+        map['CV_Link'] = findCol(['cv', 'link', 'há»“ sÆ¡', 'drive']);
+        map['Applied_Date'] = findCol(['applied_date', 'ngÃ y á»©ng tuyá»ƒn', 'date']);
         
         // Extended Fields
-        map['Gender'] = findCol(['gender', 'giới tính']);
-        map['Birth_Year'] = findCol(['birth_year', 'năm sinh', 'dob', 'yob']);
-        map['School'] = findCol(['school', 'trường', 'học vấn', 'tên trường']);
-        map['Education_Level'] = findCol(['education_level', 'trình độ', 'trình độ học vấn']);
-        map['Major'] = findCol(['major', 'chuyên ngành']);
-        map['Experience'] = findCol(['experience', 'kinh nghiệm']);
-        map['Salary_Expectation'] = findCol(['salary', 'lương', 'mức lương', 'expectation']);
-        map['Recruiter'] = findCol(['recruiter', 'người phụ trách', 'nhân viên tuyển dụng']);
-        map['Source'] = findCol(['source', 'nguồn']);
-        map['Notes'] = findCol(['notes', 'ghi chú']);
+        map['Gender'] = findCol(['gender', 'giá»›i tÃ­nh']);
+        map['Birth_Year'] = findCol(['birth_year', 'nÄƒm sinh', 'dob', 'yob']);
+        map['School'] = findCol(['school', 'trÆ°á»ng', 'há»c váº¥n', 'tÃªn trÆ°á»ng']);
+        map['Education_Level'] = findCol(['education_level', 'trÃ¬nh Ä‘á»™', 'trÃ¬nh Ä‘á»™ há»c váº¥n']);
+        map['Major'] = findCol(['major', 'chuyÃªn ngÃ nh']);
+        map['Experience'] = findCol(['experience', 'kinh nghiá»‡m']);
+        map['Salary_Expectation'] = findCol(['salary', 'lÆ°Æ¡ng', 'má»©c lÆ°Æ¡ng', 'expectation']);
+        map['Recruiter'] = findCol(['recruiter', 'ngÆ°á»i phá»¥ trÃ¡ch', 'nhÃ¢n viÃªn tuyá»ƒn dá»¥ng']);
+        map['Source'] = findCol(['source', 'nguá»“n']);
+        map['Notes'] = findCol(['notes', 'ghi chÃº']);
         
         if (map['Name'] === -1 && map['Email'] === -1 && map['Phone'] === -1) {
              console.log('Headers found:', srcHeaders);
-             return { success: false, message: 'Không tìm thấy cột Tên, Email hoặc Số điện thoại trong file. Vui lòng kiểm tra tiêu đề cột.' };
+             return { success: false, message: 'KhÃ´ng tÃ¬m tháº¥y cá»™t TÃªn, Email hoáº·c Sá»‘ Ä‘iá»‡n thoáº¡i trong file. Vui lÃ²ng kiá»ƒm tra tiÃªu Ä‘á» cá»™t.' };
         }
 
         // 4. PROCESS ROWS
@@ -3864,7 +3967,7 @@ function apiImportFromSheet(importType, data, source, stage) {
             setDest('Source', map['Source'] > -1 ? row[map['Source']] : (source || 'Import'));
             setDest('Notes', map['Notes'] > -1 ? row[map['Notes']] : '');
 
-            // Status Logic: Priority 1: File's Status/Trạng thái, Priority 2: File's Stage/Giai đoạn, Priority 3: Modal's Selection, Priority 4: 'New'
+            // Status Logic: Priority 1: File's Status/Tráº¡ng thÃ¡i, Priority 2: File's Stage/Giai Ä‘oáº¡n, Priority 3: Modal's Selection, Priority 4: 'New'
             let status = stage || 'New';
             if (map['Status'] > -1 && row[map['Status']]) {
                 status = row[map['Status']];
@@ -3898,13 +4001,13 @@ function apiImportFromSheet(importType, data, source, stage) {
              DriveApp.getFileById(srcSS.getId()).setTrashed(true);
         }
         
-        return { success: true, count: results.success, message: `Đã import thành công ${results.success} ứng viên.` };
+        return { success: true, count: results.success, message: `Ã„ ÃƒÂ£ import thÃƒÂ nh cÃƒÂ´ng ${results.success} Ã¡Â»Â©ng viÃƒÂªn.` };
 
     } catch (e) {
         if (e.toString().includes('Drive is not defined')) {
-             return { success: false, message: 'Hệ thống chưa bật Advanced Drive API để đọc Excel. Vui lòng dùng Link Google Sheet.' };
+             return { success: false, message: 'HÃ¡Â»â€¡ thÃ¡Â»â€˜ng chÃ†Â°a bÃ¡ÂºÂ­t Advanced Drive API Ã„â€˜Ã¡Â»Æ’ Ã„â€˜Ã¡Â»\x8dc Excel. Vui lÃƒÂ²ng dÃƒÂ¹ng Link Google Sheet.' };
         }
-        return { success: false, message: 'Lỗi hệ thống: ' + e.toString() };
+        return { success: false, message: 'LÃ¡Â»â€”i hÃ¡Â»â€¡ thÃ¡Â»â€˜ng: ' + e.toString() };
     }
 }
 
@@ -4069,9 +4172,9 @@ function apiCleanupCandidateSheet() {
     
     // Define mappings for merging (Target Key -> List of Alias Headers to capture data from)
     const mergeMap = {
-      'Status': ['Contact_Status', 'Tình trạng liên hệ', 'Trạng thái liên lạc'],
+      'Status': ['Contact_Status', 'TÃ¬nh tráº¡ng liÃªn há»‡', 'Tráº¡ng thÃ¡i liÃªn láº¡c'],
       'Salary_Expectation': ['Expected_Salary', 'Salary_Expectation_1', 'Salary', 'Expected Salary'],
-      'Notes': ['Newnote', 'New Note', 'Ghi chú']
+      'Notes': ['Newnote', 'New Note', 'Ghi chÃº']
     };
 
     // 1. Identify Target and Source indices
@@ -4105,7 +4208,7 @@ function apiCleanupCandidateSheet() {
     });
 
     if (Object.keys(columnsToProcess).length === 0) {
-      return { success: true, message: 'Không tìm thấy cột dư thừa nào cần dọn dẹp.' };
+      return { success: true, message: 'KhÃ´ng tÃ¬m tháº¥y cá»™t dÆ° thá»«a nÃ o cáº§n dá»n dáº¹p.' };
     }
 
     // 2. Perform Data Merge
@@ -4148,7 +4251,7 @@ function apiCleanupCandidateSheet() {
 
     return { 
         success: true, 
-        message: 'Dọn dẹp hoàn tất. Đã xóa ' + sortedIndices.length + ' cột dư thừa.',
+        message: 'Dá»n dáº¹p hoÃ n táº¥t. ÄÃ£ xÃ³a ' + sortedIndices.length + ' cá»™t dÆ° thá»«a.',
         details: deletedNames.join(', ')
     };
   } catch (e) {
@@ -4179,7 +4282,7 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
       }
     }
     
-    if (candidateRow === -1) return { success: false, message: 'Không tìm thấy ứng viên' };
+    if (candidateRow === -1) return { success: false, message: 'KhÃ´ng tÃ¬m tháº¥y á»©ng viÃªn' };
     
     const rawCandidate = {};
     headers.forEach((h, idx) => {
@@ -4223,10 +4326,10 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
 
     // 3.0 Merge Survey Data (if available by email)
     const candidateEmail = candidate['Email'];
-    Logger.log('📧 Candidate Email from Data: ' + candidateEmail);
+    Logger.log('ðŸ“§ Candidate Email from Data: ' + candidateEmail);
     if (candidateEmail) {
       const surveyData = apiGetSurveyData(candidateEmail);
-      Logger.log('📊 Survey Data Keys Found: ' + Object.keys(surveyData).join(', '));
+      Logger.log('ðŸ“Š Survey Data Keys Found: ' + Object.keys(surveyData).join(', '));
       Object.keys(surveyData).forEach(key => {
         let val = surveyData[key] || '';
         if (val instanceof Date) {
@@ -4275,7 +4378,7 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
     // 5. Add current date
     const now = new Date();
     const today = Utilities.formatDate(now, Session.getScriptTimeZone(), "dd/MM/yyyy");
-    const todayFull = `ngày ${now.getDate()} tháng ${now.getMonth() + 1} năm ${now.getFullYear()}`;
+    const todayFull = `ngÃ y ${now.getDate()} thÃ¡ng ${now.getMonth() + 1} nÄƒm ${now.getFullYear()}`;
     
     htmlContent = htmlContent.replace(/{{Today}}/g, today);
     htmlContent = htmlContent.replace(/{{TodayFull}}/g, todayFull);
@@ -4292,7 +4395,7 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
     
     // 8. Log Activity
     const userEmail = Session.getActiveUser().getEmail() || 'Admin';
-    logActivity(userEmail, 'Tạo văn bản', `Đã xuất file **${fileName}** từ mẫu **${templateName}** cho ứng viên **${candidate.Name}**`, candidateId);
+    logActivity(userEmail, 'Táº¡o vÄƒn báº£n', `ÄÃ£ xuáº¥t file **${fileName}** tá»« máº«u **${templateName}** cho á»©ng viÃªn **${candidate.Name}**`, candidateId);
 
     return { 
       success: true, 
@@ -4550,18 +4653,14 @@ function apiExportEvaluationPDF(id, overrideResult, officialSalary) {
 /**
  * 3.2 API: REJECTION REASONS MANAGEMENT
  */
-function apiGetRejectionReasons() {
-    return apiGetTableData('RejectionReasons');
-}
-
 function apiSaveRejectionReasons(reasons) {
     try {
-        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-        let rrSheet = ss.getSheetByName('RejectionReasons');
-        if (!rrSheet) {
-            rrSheet = ss.insertSheet('RejectionReasons');
-            rrSheet.appendRow(['ID', 'Type', 'Reason', 'Order']);
+        const sheet = getSheetByName('RejectionReasons');
+        if (!sheet) {
+            SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet('RejectionReasons').appendRow(['ID', 'Type', 'Reason', 'Order']);
         }
+        const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+        const rrSheet = ss.getSheetByName('RejectionReasons');
         
         // Clear existing (except header)
         if (rrSheet.getLastRow() > 1) {
@@ -4581,215 +4680,5 @@ function apiSaveRejectionReasons(reasons) {
         return { success: true, message: 'Lưu lý do từ chối thành công' };
     } catch (e) {
         return { success: false, message: e.toString() };
-    }
-}
-
-/**
- * 3.3 API: CANDIDATE SOURCES MANAGEMENT
- */
-function apiGetCandidateSources() {
-    try {
-        const sheet = getSheetByName('DATA_SOURCES');
-        if (!sheet) return [];
-        const data = sheet.getDataRange().getValues();
-        return data.slice(1).map(row => row[0]); // Returns array of source names
-    } catch (e) {
-        return [];
-    }
-}
-
-function apiAddCandidateSource(name) {
-    try {
-        const sheet = getSheetByName('DATA_SOURCES');
-        sheet.appendRow([name, new Date()]);
-        return { success: true, message: 'Đã thêm nguồn: ' + name };
-    } catch (e) {
-        return { success: false, message: e.toString() };
-    }
-}
-
-function apiDeleteCandidateSource(name) {
-    try {
-        const sheet = getSheetByName('DATA_SOURCES');
-        const data = sheet.getDataRange().getValues();
-        for (let i = 1; i < data.length; i++) {
-            if (data[i][0] === name) {
-                sheet.deleteRow(i + 1);
-                return { success: true, message: 'Đã xóa nguồn: ' + name };
-            }
-        }
-        return { success: false, message: 'Không tìm thấy nguồn' };
-    } catch (e) {
-        return { success: false, message: e.toString() };
-    }
-}
-
-function apiEditCandidateSource(oldName, newName) {
-    try {
-        const sheet = getSheetByName('DATA_SOURCES');
-        const data = sheet.getDataRange().getValues();
-        for (let i = 1; i < data.length; i++) {
-            if (data[i][0] === oldName) {
-                sheet.getRange(i + 1, 1).setValue(newName);
-                return { success: true, message: 'Đã cập nhật nguồn: ' + newName };
-            }
-        }
-        return { success: false, message: 'Không tìm thấy nguồn cũ' };
-    } catch (e) {
-        return { success: false, message: e.toString() };
-    }
-}
-
-/**
- * 3.4 API: EMAIL TEMPLATES MANAGEMENT
- */
-
-/**
- * DATABASE INITIALIZATION: Reset and Rebuild all sheets with optimized structure
- * WARNING: DANGER! This clears all existing data.
- */
-function apiInitializeDatabase() {
-    Logger.log('=== INITIALIZE DATABASE STARTED ===');
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // 1. Create backup first (safety)
-    apiCreateBackup();
-    
-    // 2. Define standard sheets and headers
-    const schema = [
-        { 
-            name: 'CANDIDATES', 
-            headers: ['ID', 'Name', 'Gender', 'Birth_Year', 'Phone', 'Email', 'Department', 'Position', 'Experience', 'School', 'Education_Level', 'Major', 'Salary_Expectation', 'Source', 'Recruiter', 'Stage', 'Status', 'Notes', 'CV_Link', 'Applied_Date', 'User', 'TicketID', 'Rejection_Type', 'Rejection_Reason', 'Rejection_Source', 'Hire_Date'] 
-        },
-        { 
-            name: 'SYS_SETTINGS', 
-            headers: ['Type', 'Key', 'Value_JSON'] 
-        },
-        { 
-            name: 'SYS_RESOURCES', 
-            headers: ['Type', 'ID', 'Title_Name', 'Subject', 'Category', 'Status', 'Content_JSON', 'Date_Created'] 
-        },
-        { 
-            name: 'SYS_ACCOUNTS', 
-            headers: ['Type', 'ID', 'Username_ID', 'Full_Name', 'Email', 'Role_Position', 'Phone', 'Data_JSON'] 
-        },
-        { 
-            name: 'CORE_RECRUITMENT', 
-            headers: ['Type', 'ID', 'Title', 'Status', 'Data_JSON', 'Date_Created'] 
-        },
-        { 
-            name: 'SYSTEM_LOGS', 
-            headers: ['ID', 'Timestamp', 'User', 'Action', 'Description', 'Details'] 
-        }
-    ];
-
-    // 3. Create/Reset sheets
-    schema.forEach(table => {
-        let sheet = ss.getSheetByName(table.name);
-        if (sheet) {
-            sheet.clear();
-        } else {
-            sheet = ss.insertSheet(table.name);
-        }
-        sheet.getRange(1, 1, 1, table.headers.length).setValues([table.headers]).setFontWeight('bold').setBackground('#f3f3f3');
-        sheet.setFrozenRows(1);
-    });
-
-    // 4. Cleanup Legacy Sheets (Optional but recommended to avoid confusion)
-    const legacySheets = [
-        'DATA ỨNG VIÊN', 'CẤU HÌNH HỆ THỐNG', 'CẤU HÌNH CÔNG TY', 'EVALUATIONS', 
-        'Users', 'DATA_SOURCES', 'Recruiters', 'PROJECTS', 'RECRUITMENT_TICKETS',
-        'DATA_RECRUITERS', 'CẤU HÌNH HỆ THỐNG'
-    ];
-    
-    legacySheets.forEach(name => {
-        const sheet = ss.getSheetByName(name);
-        if (sheet && name !== 'CANDIDATES' && name !== 'SYS_SETTINGS' && name !== 'SYS_RESOURCES' && name !== 'SYS_ACCOUNTS' && name !== 'CORE_RECRUITMENT' && name !== 'SYSTEM_LOGS') {
-            try { ss.deleteSheet(sheet); } catch(e) {}
-        }
-    });
-
-    // 5. Add default Admin user to SYS_ACCOUNTS
-    const accountsSheet = ss.getSheetByName('SYS_ACCOUNTS');
-    accountsSheet.appendRow(['USER', 'USR_ADMIN', 'admin', 'Administrator', 'hr.khanhdo@gmail.com', 'Admin', '', '{"role":"Admin"}']);
-
-    // 6. Add some default Stages to SYS_SETTINGS
-    const settingsSheet = ss.getSheetByName('SYS_SETTINGS');
-    const defaultStages = [
-        ['STAGE', 'Ứng tuyển', '{"color":"#6c757d"}'],
-        ['STAGE', 'Xét duyệt hồ sơ', '{"color":"#0d6efd"}'],
-        ['STAGE', 'Sơ vấn', '{"color":"#0dcaf0"}'],
-        ['STAGE', 'Phỏng vấn', '{"color":"#ffc107"}'],
-        ['STAGE', 'Đề nghị (Offer)', '{"color":"#198754"}'],
-        ['STAGE', 'Tuyển dụng', '{"color":"#20c997"}'],
-        ['STAGE', 'Từ chối', '{"color":"#dc3545"}']
-    ];
-    if (defaultStages.length > 0) {
-        settingsSheet.getRange(2, 1, defaultStages.length, 3).setValues(defaultStages);
-    }
-
-    logActivity('System', 'Khởi tạo', 'Đã khởi tạo lại hệ thống Database chuẩn Consolidated.', '');
-    
-    return { success: true, message: 'Hệ thống đã được thiết lập lại dữ liệu thành công.' };
-}
-
-/**
- * SYSTEM MAINTENANCE: Cleanup Activity Logs
- */
-function apiCleanupActivityLogs() {
-    Logger.log('=== CLEANUP ACTIVITY LOGS ===');
-    try {
-        let sheet = getSheetByName(ACTIVITY_LOG_SHEET_NAME);
-        if (!sheet) return { success: false, message: 'Không tìm thấy bảng nhật ký.' };
-        
-        const lastRow = sheet.getLastRow();
-        if (lastRow <= 1) return { success: true, message: 'Bảng nhật ký đã trống.' };
-        
-        // Keep the last 100 entries, delete the rest
-        if (lastRow > 100) {
-            sheet.deleteRows(2, lastRow - 100);
-            return { success: true, message: 'Đã dọn dẹp các bản ghi cũ, chỉ giữ lại 100 hoạt động gần nhất.' };
-        }
-        
-        return { success: true, message: 'Dữ liệu hiện tại vẫn nằm trong giới hạn an toàn.' };
-    } catch (e) {
-        return { success: false, message: 'Lỗi dọn dẹp: ' + e.toString() };
-    }
-}
-
-/**
- * SYSTEM MAINTENANCE: Sheet Migration & Consolidation
- */
-function runSheetMigration() {
-    Logger.log('=== RUN SHEET MIGRATION ===');
-    try {
-        const ss = SpreadsheetApp.getActiveSpreadsheet();
-        
-        // 1. Create consolidated sheets if missing
-        const requiredSheets = [
-            SYS_SETTINGS_SHEET_NAME,
-            CORE_RECRUITMENT_SHEET_NAME,
-            ACCOUNTS_SHEET_NAME,
-            CANDIDATES_SHEET_NAME,
-            RESOURCES_SHEET_NAME,
-            ACTIVITY_LOG_SHEET_NAME
-        ];
-        
-        requiredSheets.forEach(name => {
-            if (!ss.getSheetByName(name)) {
-                ss.insertSheet(name);
-                Logger.log('Created sheet: ' + name);
-            }
-        });
-        
-        // 2. Implementation of actual data movement would go here
-        // For now, we signal success that the structure is ready
-        
-        return { 
-            success: true, 
-            message: 'Hệ thống đã chuẩn bị xong cấu trúc dữ liệu mới (V3.0). Các API hiện tại đã sẵn sàng hoạt động với cấu trúc này.' 
-        };
-    } catch (e) {
-        return { success: false, message: 'Lỗi di trú: ' + e.toString() };
     }
 }
