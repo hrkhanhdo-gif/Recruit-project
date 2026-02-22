@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            font-family: 'Times New Roman', serif;
+            line-height: 1.4;
+            color: #000;
+            padding: 40px;
+            font-size: 13pt;
+        }
+
+        .header-table {
+            width: 100%;
+            margin-bottom: 20px;
+        }
+
+        .header-left {
+            text-align: center;
+            width: 45%;
+            vertical-align: top;
+        }
+
+        .header-right {
+            text-align: center;
+            width: 55%;
+            vertical-align: top;
+        }
+
+        .title {
+            text-align: center;
+            font-size: 16pt;
+            font-weight: bold;
+            margin: 25px 0 5px;
+        }
+
+        .sub-title {
+            text-align: center;
+            font-size: 12pt;
+            margin-bottom: 15px;
+        }
+
+        .date-location {
+            text-align: right;
+            font-style: italic;
+            margin-bottom: 20px;
+        }
+
+        .clause-title {
+            font-weight: bold;
+        }
+
+        p {
+            margin: 5px 0;
+            text-align: justify;
+        }
+
+        .signature-table {
+            width: 100%;
+            margin-top: 40px;
+        }
+
+        .signature-col {
+            width: 50%;
+            text-align: center;
+            vertical-align: top;
+        }
+    </style>
+</head>
+
+<body>
+    <table class="header-table">
+        <tr>
+            <td class="header-left">
+                <b>{{CompanyName}}</b><br>
+                ─────────
+            </td>
+            <td class="header-right">
+                <div style="white-space: nowrap;"><b>CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</b></div>
+                <b>Độc lập – Tự do – Hạnh phúc</b><br>
+                ───────────────
+            </td>
+        </tr>
+    </table>
+
+    <div class="date-location">
+        {{IssuanceLocation}}, {{TodayFull}}
+    </div>
+
+    <div class="title">HỢP ĐỒNG LAO ĐỘNG</div>
+    <div class="sub-title">(Số: {{ContractNo}}/HĐLĐ-{{CompanyNameShort}})</div>
+
+    <p>Căn cứ Bộ luật Lao động 2019, được Quốc hội ban hành và có hiệu lực từ ngày 01/01/2021 và các văn bản hướng dẫn
+        thi hành;</p>
+    <p>Căn cứ vào Quy chế hoạt động của {{CompanyName}}</p>
+    <p>Căn cứ nhu cầu và thoả thuận tự nguyện của hai bên,</p>
+
+    <p>Hôm nay, {{TodayFull}}, tại {{CompanyAddress}}, chúng tôi gồm:</p>
+
+    <p><b>Một bên là Người sử dụng lao động: {{CompanyName}}</b> (sau đây gọi là “người sử dụng lao động” hoặc “Công
+        ty”).</p>
+    <p>Địa chỉ: {{CompanyAddress}}</p>
+    <p>Điện thoại: {{CompanyPhone}}</p>
+    <p>Đại diện bởi: <b>{{CompanySignerName}}</b> - Chức vụ: {{CompanySignerPosition}}</p>
+
+    <p><b>Và một bên là Người lao động:</b></p>
+    <p>Họ tên: <b>{{Name}}</b> - Giới tính: {{Gender}} - Quốc tịch: Việt Nam</p>
+    <p>Ngày sinh: {{DOB}}</p>
+    <p>Số CMND/CCCD: {{CCCD}} - Ngày cấp: {{CCCD_Date}} - Nơi cấp: {{CCCD_Place}}</p>
+    <p>Hộ khẩu thường trú: {{HK_Address}}</p>
+    <p>Chỗ ở hiện nay: {{Current_Address}}</p>
+    <p>Số điện thoại: {{Phone}} - Địa chỉ Email: {{Email}}</p>
+
+    <p>Thỏa thuận ký kết hợp đồng lao động và cam kết làm đúng những điều khoản sau đây:</p>
+
+    <p><span class="clause-title">Điều 1. Thời hạn và công việc</span></p>
+    <p>1. Thời hạn của hợp đồng lao động</p>
+    <p>a. Loại hợp đồng lao động: Hợp đồng lao động xác định thời hạn</p>
+    <p>b. Thời hạn của hợp đồng: <b>{{ContractPeriod}}</b>, từ ngày {{StartDate}} đến ngày {{EndDate}}</p>
+    <p>2. Công việc và địa điểm làm việc</p>
+    <p>a. Địa điểm làm việc: Tại {{CompanyAddress}} và/ hoặc các dự án, các địa điểm kinh doanh của Công ty và các địa
+        điểm khác theo yêu cầu công việc.</p>
+    <p>b. Trình độ chuyên môn: {{Education_Level}} {{Major}}</p>
+    <p>c. Chức vụ: {{Position}}</p>
+    <p>d. Công việc phải làm: Thực hiện các nhiệm vụ của {{Position}} theo bản mô tả công việc do Công ty ban hành và
+        các mục tiêu/kế hoạch/nhiệm vụ cụ thể do cấp quản lý giao.</p>
+
+    <p><span class="clause-title">Điều 2. Chế độ làm việc</span></p>
+    <p>1. Thời giờ làm việc, thời giờ nghỉ ngơi</p>
+    <p>+ Thời gian làm việc: {{CompanyWorkTime}}</p>
+    <p>Thời gian có thể thay đổi theo mùa hoặc theo yêu cầu thực tế của công việc, sẽ được thông báo bằng văn bản.</p>
+    <p>2. Điều kiện làm việc</p>
+    <p>a. Dụng cụ làm việc: Được trang bị đầy đủ những dụng cụ cần thiết dùng trong công việc.</p>
+    <p>b. Điều kiện an toàn và vệ sinh lao động: Theo quy định của pháp luật và các văn bản nội bộ của Công ty.</p>
+
+    <p><span class="clause-title">Điều 3. Nghĩa vụ và quyền lợi của người lao động</span></p>
+    <p>1. Quyền lợi</p>
+    <p>a. Phương tiện đi làm: Người lao động tự túc.</p>
+    <p>b. Mức lương theo công việc hoặc chức danh: <b>{{Salary}} VNĐ</b> (Bằng chữ: {{SalaryInWords}} Việt Nam đồng).
+    </p>
+    <p>c. Các khoản phụ cấp lương, các khoản bổ sung khác: Theo Quy chế trả lương và các văn bản nội bộ của Công ty.</p>
+    <p>- Chế độ nghỉ ngơi: Nghỉ chiều thứ Bảy và Chủ nhật. Các chế độ nghỉ phép và lễ, tết theo quy định hiện hành.</p>
+    <p>d. Hình thức trả lương: Chuyển khoản hoặc tiền mặt.</p>
+    <p>e. Kỳ hạn trả lương: Trả một lần vào ngày 05-10 của tháng sau.</p>
+    <p>f. Các nội dung khác (Bảo hiểm, Trang bị bảo hộ, Đào tạo...): Theo quy định của pháp luật và văn bản nội bộ của
+        Công ty.</p>
+    <p>2. Nghĩa vụ: Hoàn thành công việc đã cam kết, tuân thủ Nội quy lao động, bảo quản tài sản Công ty và bảo mật
+        thông tin kinh doanh.</p>
+
+    <p><span class="clause-title">Điều 4. Nghĩa vụ và quyền hạn của người sử dụng lao động</span></p>
+    <p>1. Nghĩa vụ: Bảo đảm việc làm, thanh toán đầy đủ quyền lợi cho người lao động đúng hạn.</p>
+    <p>2. Quyền hạn: Điều hành lao động theo nhu cầu sản xuất, xử lý kỷ luật theo quy định pháp luật và nội bộ Công ty.
+    </p>
+
+    <p><span class="clause-title">Điều 5. Thỏa thuận khác</span></p>
+    <p>Các bên thống nhất việc thông báo qua Email hoặc tin nhắn được coi là hoàn thành nghĩa vụ thông báo chính thức.
+    </p>
+
+    <p><span class="clause-title">Điều 6. Điều khoản thi hành</span></p>
+    <p>Hợp đồng có hiệu lực kể từ ngày {{StartDate}}. Được làm thành 02 bản có giá trị pháp lý như nhau.</p>
+
+    <table class="signature-table">
+        <tr>
+            <td class="signature-col">
+                <b>NGƯỜI LAO ĐỘNG</b><br>
+                <i>(Ký, ghi rõ họ tên)</i>
+                <br><br><br><br><br>
+                <b>{{Name}}</b>
+            </td>
+            <td class="signature-col">
+                <b>ĐẠI DIỆN CÔNG TY</b><br>
+                <i>(Ký, đóng dấu, ghi rõ họ tên)</i>
+                <br><br><br><br><br>
+                <b>{{CompanySignerName}}</b>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>
