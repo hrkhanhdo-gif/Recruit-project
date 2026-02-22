@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #0056b3;
+            padding-bottom: 10px;
+        }
+
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #0056b3;
+            text-transform: uppercase;
+            margin: 0;
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .info-section {
+            margin-bottom: 25px;
+        }
+
+        .info-grid {
+            display: table;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        .info-row {
+            display: table-row;
+        }
+
+        .info-label {
+            display: table-cell;
+            font-weight: bold;
+            width: 30%;
+            padding: 5px 0;
+        }
+
+        .info-value {
+            display: table-cell;
+            padding: 5px 0;
+            border-bottom: 1px dotted #ccc;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #0056b3;
+            border-left: 4px solid #0056b3;
+            padding-left: 10px;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            background-color: #f8f9fa;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        th {
+            background-color: #0056b3;
+            color: white;
+            text-align: center;
+            padding: 12px;
+        }
+
+        td {
+            padding: 10px;
+            border: 1px solid #ddd;
+        }
+
+        .score-cell {
+            text-align: center;
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .summary-box {
+            border: 1px solid #0056b3;
+            background-color: #ebf5ff;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+        }
+
+        .total-score {
+            font-size: 20px;
+            font-weight: bold;
+            color: #d9534f;
+        }
+
+        .result-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 14px;
+        }
+
+        .pass {
+            background-color: #dff0d8;
+            color: #3c763d;
+            border: 1px solid #d6e9c6;
+        }
+
+        .consider {
+            background-color: #fcf8e3;
+            color: #8a6d3b;
+            border: 1px solid #faebcc;
+        }
+
+        .reject {
+            background-color: #f2dede;
+            color: #a94442;
+            border: 1px solid #ebccd1;
+        }
+
+        .comment-box {
+            min-height: 80px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background-color: #fff;
+        }
+
+        .footer-section {
+            margin-top: 50px;
+            text-align: right;
+        }
+
+        .signature-area {
+            margin-top: 10px;
+            font-style: italic;
+            color: #555;
+            font-size: 13px;
+        }
+
+        .watermark {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            font-size: 10px;
+            color: #aaa;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div class="title">Phiếu Đánh Giá Phỏng Vấn</div>
+        <div class="subtitle">Hệ thống Quản trị Tuyển dụng - ATS Recruit</div>
+    </div>
+
+    <div class="info-section">
+        <div class="section-title">Thông tin ứng viên & Vị trí</div>
+        <div class="info-grid">
+            <div class="info-row">
+                <div class="info-label">Họ và tên ứng viên:</div>
+                <div class="info-value"><strong>{{CandidateName}}</strong></div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Vị trí ứng tuyển:</div>
+                <div class="info-value">{{Position}}</div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Phòng ban:</div>
+                <div class="info-value">{{Department}}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="info-section">
+        <div class="section-title">Thông tin người đánh giá</div>
+        <div class="info-grid">
+            <div class="info-row">
+                <div class="info-label">Người đánh giá (Manager):</div>
+                <div class="info-value"><strong>{{ManagerName}}</strong></div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Chức vụ:</div>
+                <div class="info-value">{{ManagerPos}}</div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Bộ phận:</div>
+                <div class="info-value">{{ManagerDept}}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-title">Kết quả đánh giá chi tiết (Thang điểm 1-10)</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="text-align: left;">Tiêu chí đánh giá</th>
+                <th style="width: 100px;">Điểm số</th>
+                <th style="width: 150px;">Phân loại</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{ScoreRows}}
+        </tbody>
+    </table>
+
+    <div class="summary-box">
+        <div class="info-grid">
+            <div class="info-row">
+                <div class="info-label">Tổng điểm trung bình:</div>
+                <div class="info-value"><span class="total-score">{{TotalScore}} / 10</span></div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Kết quả cuối cùng:</div>
+                <div class="info-value">
+                    <strong>{{FinalResult}}</strong>
+                </div>
+            </div>
+            <div class="info-row">
+                <div class="info-label">Mức lương đề xuất:</div>
+                <div class="info-value"><strong>{{ProposedSalary}}</strong></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-title">Nhận xét chi tiết của người phỏng vấn</div>
+    <div class="comment-box">
+        {{Comment}}
+    </div>
+
+    <div class="footer-section">
+        <div class="signature-area">
+            {{SignatureLine}}
+        </div>
+    </div>
+
+    <div class="watermark">
+        Xuất bởi hệ thống ATS Recruit | Ngày xuất: {{Today}}
+    </div>
+</body>
+
+</html>
