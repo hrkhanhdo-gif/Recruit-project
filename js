@@ -131,12 +131,13 @@
         `;
         content.scrollTop = content.scrollHeight;
 
-        // Loading bubble
+        // Thêm hiệu ứng đang suy nghĩ với ID duy nhất
+        const typingId = 'ai-typing-' + Date.now();
         content.innerHTML += `
-            <div id="ai-typing" class="d-flex flex-column align-items-start mb-4">
+            <div id="${typingId}" class="ai-typing-indicator d-flex flex-column align-items-start mb-4">
                 <div class="msg-ai shadow-sm p-3 rounded-4 bg-white" style="border-bottom-left-radius: 5px !important;">
-                    <span class="spinner-grow spinner-grow-sm text-primary" role="status"></span>
-                    <span class="ms-1">AI đang suy nghĩ...</span>
+                    <div class="spinner-grow spinner-grow-sm text-warning" role="status"></div>
+                    <span class="ms-2 text-muted">AI đang suy nghĩ...</span>
                 </div>
             </div>
         `;
@@ -144,13 +145,20 @@
 
         google.script.run
             .withSuccessHandler(function (response) {
-                const typing = document.getElementById('ai-typing');
+                const typing = document.getElementById(typingId);
                 if (typing) typing.remove();
+
+                let answer = "";
+                if (typeof response === 'object') {
+                    answer = response.answer || (response.success ? "..." : "Lỗi: " + response.message);
+                } else {
+                    answer = response;
+                }
 
                 content.innerHTML += `
                     <div class="d-flex flex-column align-items-start mb-4">
                         <div class="msg-ai shadow-sm p-3 rounded-4 bg-white" style="border-bottom-left-radius: 5px !important;">
-                            ${response.replace(/\n/g, '<br>')}
+                            ${answer.replace(/\n/g, '<br>')}
                         </div>
                         <small class="text-muted mt-1 ms-2" style="font-size: 10px;">AI • Vừa xong</small>
                     </div>
@@ -158,8 +166,9 @@
                 content.scrollTop = content.scrollHeight;
             })
             .withFailureHandler(function (err) {
-                const typing = document.getElementById('ai-typing');
+                const typing = document.getElementById(typingId);
                 if (typing) typing.remove();
+                console.error('Chatbot Failure:', err);
                 Swal.fire('Lỗi Chat', err.toString(), 'error');
             })
             .apiChatWithGemini(msg);
@@ -1706,22 +1715,47 @@
         isEditing = true;
         editingId = id;
 
-        // Populate Form
-        const form = document.getElementById('add-job-form');
-        form.querySelector('[name="title"]').value = job.Title || '';
-        form.querySelector('[name="department"]').value = job.Department || '';
-        form.querySelector('[name="location"]').value = job.Location || '';
-        form.querySelector('[name="type"]').value = job.Type || '';
-        form.querySelector('[name="description"]').value = job.Description || '';
+        // Lưu thông tin job vào data attribute để restore sau khi modal show xong
+        const modalEl = document.getElementById('addJobModal');
+        modalEl.setAttribute('data-editing-id', id);
 
         // UI Updates
         document.querySelector('#addJobModal .modal-title').innerText = 'Cập nhật Tin Tuyển Dụng';
         document.querySelector('#addJobModal .btn-primary-custom').innerText = 'Cập nhật';
 
-        // Show Modal
-        const modal = new bootstrap.Modal(document.getElementById('addJobModal'));
+        // Show Modal - sau đó 'shown.bs.modal' sẽ chạy và populate dropdowns
+        const modal = new bootstrap.Modal(modalEl);
         modal.show();
+
+        // Sau khi modal show và dropdowns được populate, mới điền giá trị
+        modalEl.addEventListener('shown.bs.modal', function onShown() {
+            modalEl.removeEventListener('shown.bs.modal', onShown);
+
+            const form = document.getElementById('add-job-form');
+            form.querySelector('[name="title"]').value = job.Title || '';
+            form.querySelector('[name="type"]').value = job.Type || '';
+            form.querySelector('[name="description"]').value = job.Description || '';
+            form.querySelector('[name="ticketId"]').value = job.TicketID || job.Ticket_ID || '';
+
+            // Điền Phòng ban (dropdown đã được populate bởi shown.bs.modal)
+            const deptSelect = document.getElementById('job-dept');
+            if (deptSelect) {
+                deptSelect.value = job.Department || '';
+                // Kích hoạt auto-populate Vị trí cụ thể
+                onJobDepartmentChange();
+                // Sau đó set giá trị Position
+                setTimeout(() => {
+                    const posSelect = document.getElementById('job-position');
+                    if (posSelect) posSelect.value = job.Position || '';
+                }, 50);
+            }
+
+            // Điền Địa điểm (dropdown đã được populate bởi shown.bs.modal)
+            const locSelect = document.getElementById('job-location');
+            if (locSelect) locSelect.value = job.Location || '';
+        }, { once: false }); // sẽ bị remove thủ công
     }
+
 
     function toggleJobStatus(id, currentStatus) {
         // Toggle logic: If Open/Mở -> Closed. Else -> Open.
