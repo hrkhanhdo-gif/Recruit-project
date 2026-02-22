@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            font-family: 'Times New Roman', serif;
+            line-height: 1.4;
+            color: #000;
+            padding: 40px;
+            font-size: 13pt;
+            /* Standard size for documents */
+        }
+
+        .header-table {
+            width: 100%;
+            margin-bottom: 20px;
+        }
+
+        .header-left {
+            text-align: center;
+            width: 45%;
+            vertical-align: top;
+        }
+
+        .header-right {
+            text-align: center;
+            width: 55%;
+            vertical-align: top;
+        }
+
+        .title {
+            text-align: center;
+            font-size: 16pt;
+            font-weight: bold;
+            margin: 25px 0 15px;
+        }
+
+        .date-location {
+            text-align: right;
+            font-style: italic;
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        }
+
+        p {
+            margin: 5px 0;
+            text-align: justify;
+        }
+
+        .clause-title {
+            font-weight: bold;
+        }
+
+        .signature-table {
+            width: 100%;
+            margin-top: 40px;
+        }
+
+        .signature-col {
+            width: 50%;
+            text-align: center;
+            vertical-align: top;
+        }
+
+        ul {
+            margin: 5px 0;
+            padding-left: 20px;
+        }
+
+        li {
+            margin-bottom: 3px;
+        }
+
+        .underline {
+            display: inline-block;
+            border-bottom: 1px dotted #000;
+            min-width: 50px;
+        }
+    </style>
+</head>
+
+<body>
+    <table class="header-table">
+        <tr>
+            <td class="header-left">
+                <b>{{CompanyName}}</b><br>
+                Số: {{ContractNo}}/HĐTV-{{CompanyNameShort}}<br>
+                ─────────
+            </td>
+            <td class="header-right">
+                <div style="white-space: nowrap;"><b>CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</b></div>
+                <b>Độc lập – Tự do – Hạnh phúc</b><br>
+                ───────────────
+            </td>
+        </tr>
+    </table>
+
+    <div class="date-location">
+        {{IssuanceLocation}}, {{TodayFull}}
+    </div>
+
+    <div class="title">HỢP ĐỒNG THỬ VIỆC</div>
+
+    <p>- Căn cứ Bộ luật Lao động nước Cộng hoà xã hội chủ nghĩa Việt Nam năm 2019 và các văn bản hướng dẫn thi hành;</p>
+    <p>- Căn cứ Nghị định 145/2020/NĐ-CP ngày 14/12/2020 của Chính phủ;</p>
+    <p>- Căn cứ nhu cầu, khả năng của các bên;</p>
+
+    <p>Hôm nay, {{TodayFull}}, Tại {{CompanyAddress}}</p>
+
+    <p><b>Chúng tôi, một bên là: {{CompanyName}}</b></p>
+    <p>Địa chỉ: {{CompanyAddress}}</p>
+    <p>Mã số thuế: {{CompanyTaxCode}}</p>
+    <p>Đại diện bởi Ông/Bà: <b>{{CompanySignerName}}</b> - Chức vụ: {{CompanySignerPosition}}</p>
+    <p>(Gọi tắt là Bên A)</p>
+
+    <p><b>Và một bên là Ông/Bà: {{Name}}</b></p>
+    <p>Giấy tờ tùy thân: {{CCCD}} cấp ngày: {{CCCD_Date}} tại: {{CCCD_Place}}</p>
+    <p>Nơi đăng ký hộ khẩu thường trú: {{HK_Address}}</p>
+    <p>Chỗ ở hiện nay: {{Current_Address}} - Điện thoại: {{Phone}}</p>
+    <p>Số tài khoản: {{Bank_Account}} - Mở tại ngân hàng: {{Bank_Name}} - Chi nhánh: {{Bank_Branch}}</p>
+    <p>(Gọi tắt là Bên B)</p>
+
+    <p>Hai bên thoả thuận ký kết hợp đồng thử việc và cam kết đúng những điều khoản sau đây:</p>
+
+    <p><span class="clause-title">Điều 1: Thời hạn và công việc theo hợp đồng</span></p>
+    <p>- Loại hợp đồng: Hợp đồng thử việc.</p>
+    <p>- Thời hạn thử việc: {{ProbationPeriodDays}} ngày (Từ ngày {{StartDate}} đến ngày {{ProbationEndDate}})</p>
+    <p>- Địa điểm làm việc: tại {{CompanyAddress}} và các địa điểm khác theo yêu cầu của bên A.</p>
+    <p>- Bộ phận làm việc: {{Department}}</p>
+    <p>- Chức vụ (nếu có): {{Position}}</p>
+    <p>- Nhiệm vụ: Thực hiện các công việc theo đúng yêu cầu khi được tuyển dụng dưới sự quản lý, điều hành của người
+        quản lý trực tiếp.</p>
+
+    <p><span class="clause-title">Điều 2: Chế độ làm việc</span></p>
+    <p>- Thời gian làm việc: 8h/ngày; 05 ngày/tuần từ thứ 2 đến thứ 6;</p>
+    <p>- Thời gian nghỉ ngơi: Được nghỉ thứ 7 và Chủ nhật hàng tuần; Nghỉ lễ, tết, nghỉ không hưởng lương theo quy định
+        của pháp luật;</p>
+    <p>- Dụng cụ làm việc: Được cấp phát theo yêu cầu của công việc.</p>
+
+    <p><span class="clause-title">Điều 3: Quyền lợi và nghĩa vụ của Bên B</span></p>
+    <p>1) Quyền lợi</p>
+    <p>a) Tiền lương và phụ cấp</p>
+    <p>- Mức lương thử việc: <b>{{Salary}} VNĐ/tháng</b> (Bằng chữ: {{SalaryInWords}} Việt Nam đồng);</p>
+    <p>- Phụ cấp ăn ca: Theo mức tối đa của quy định nhà nước;</p>
+    <p>- Phụ cấp khác: Theo Quy chế lương, thưởng của Công ty;</p>
+    <p>- Hình thức trả lương: Chuyển khoản hoặc tiền mặt. Trả 01 lần vào cuối tháng hoặc chậm nhất là 5 ngày đầu tháng
+        sau;</p>
+    <p>b) Các quyền lợi khác</p>
+    <p>- Chế độ đào tạo: Người lao động được đào tạo chuyên môn phù hợp với vị trí được giao;</p>
+    <p>- Được ký hợp đồng lao động chính thức nếu quá trình thử việc đạt kết quả tốt;</p>
+    <p>- Bên B có quyền đơn phương chấm dứt hợp đồng mà không cần lý do hay thời hạn báo trước, khi đó Bên A vẫn phải
+        chi trả tiền lương theo thời gian làm việc thực tế.</p>
+    <p>2) Nghĩa vụ</p>
+    <p>- Thực hiện công việc mẫn cán, đảm bảo hiệu quả cao nhất Duy trì kỷ luật lao động và nội quy Công ty;</p>
+    <p>- Bảo vệ tài sản và uy tín của Bên A. Bồi thường thiệt hại nếu gây mất mát, hư hỏng tài sản do lỗi cá nhân;</p>
+    <p>- Bảo mật mọi thông tin liên quan đến Công ty ngay cả khi chấm dứt hợp đồng.</p>
+
+    <p><span class="clause-title">Điều 4: Quyền hạn và nghĩa vụ của Bên A</span></p>
+    <p>1) Quyền hạn: Điều hành người lao động theo đúng chức năng chuyên môn. Tạm hoãn hoặc chấm dứt hợp đồng nếu vi
+        phạm pháp luật hoặc điều khoản hợp đồng.</p>
+    <p>2) Nghĩa vụ: Đảm bảo điều kiện làm việc đạt hiệu quả. Thanh toán đầy đủ quyền lợi cho người lao động đúng hạn.
+    </p>
+
+    <p><span class="clause-title">Điều 5: Điều khoản thi hành</span></p>
+    <p>- Hợp đồng được ký kết trên tinh thần tự nguyện của cả hai bên.</p>
+    <p>- Mọi tranh chấp được ưu tiên giải quyết qua thương lượng thiện chí, nếu không thành sẽ đưa ra tòa án có thẩm
+        quyền.</p>
+    <p>- Hợp đồng được lập thành 02 bản có giá trị pháp lý như nhau, mỗi bên giữ 01 bản.</p>
+
+    <table class="signature-table">
+        <tr>
+            <td class="signature-col">
+                <b>NGƯỜI LAO ĐỘNG</b><br>
+                <i>(Ký, ghi rõ họ tên)</i>
+                <br><br><br><br><br>
+                <b>{{Name}}</b>
+            </td>
+            <td class="signature-col">
+                <b>ĐẠI DIỆN CÔNG TY</b><br>
+                <i>(Ký, đóng dấu, ghi rõ họ tên)</i>
+                <br><br><br><br><br>
+                <b>{{CompanySignerName}}</b>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>
