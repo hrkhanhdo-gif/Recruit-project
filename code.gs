@@ -214,6 +214,7 @@ function apiAnalyzeCandidateMatching(candidateId, ticketId) {
             },
             required: ["score", "pros", "cons", "summary"]
         }
+    });
 
     return { success: true, analysis: analysis };
   } catch (e) {
@@ -276,8 +277,8 @@ function apiChatWithGemini(userMessage) {
     return { success: true, answer: answer };
 
   } catch (error) {
-    console.error("Chatbot Error:", error);
-    return { success: false, message: error.toString() };
+    Logger.log("Chatbot Error: " + error.toString());
+    return { success: false, message: error.toString(), answer: "Xin lỗi, em đang gặp sự cố kết nối. Vui lòng thử lại sau." };
   }
 }
 
