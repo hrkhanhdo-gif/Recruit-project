@@ -112,6 +112,10 @@
                     id="nav-recruitment-hub">
                     <i class="fas fa-layer-group"></i> Quản lý Tuyển dụng
                 </a>
+                <a href="javascript:void(0)" class="nav-link" onclick="showSection('calendar-section', this)"
+                    id="nav-calendar">
+                    <i class="fas fa-calendar-alt"></i> Lịch phỏng vấn
+                </a>
                 <a href="javascript:void(0)" class="nav-link" onclick="showSection('settings', this)" id="nav-settings">
                     <i class="fas fa-cogs"></i> Cài Đặt
                 </a>
@@ -520,6 +524,31 @@
                                         <tbody></tbody>
                                     </table>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 7. CALENDAR SECTION -->
+            <div id="calendar-section" class="section">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 fw-bold">📅 Lịch Phỏng Vấn Tuyển Dụng</h5>
+                        <button class="btn btn-sm btn-light"
+                            onclick="showSection('calendar-section', document.getElementById('nav-calendar'))">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="calendar-container" style="overflow: hidden; border-radius: 0 0 5px 5px;">
+                            <iframe
+                                src="https://calendar.google.com/calendar/embed?src=b4a01a2123b4134ecadfc6178e645a47acaa5653478befa66693b0859de28602%40group.calendar.google.com&ctz=Asia%2FHo_Chi_Minh"
+                                style="border: 0" width="100%" height="600" frameborder="0" scrolling="no">
+                            </iframe>
+                            <div class="mt-2 text-muted small italic">
+                                <i class="fas fa-info-circle"></i> Lưu ý: Nếu không thấy lịch, vui lòng đảm bảo bạn đã
+                                được cấp quyền truy cập hoặc lịch đã được để ở chế độ Công khai (Public).
                             </div>
                         </div>
                     </div>
