@@ -70,6 +70,10 @@
     document.addEventListener('DOMContentLoaded', function () {
         // PERMANENT LOGIN BYPASS REMOVED
         checkSession();
+
+        // Initialize Chatbot logic
+        const chatCircle = document.getElementById('chat-circle');
+        if (chatCircle) chatCircle.onclick = toggleChat;
     });
 
     function checkSession() {
@@ -86,6 +90,191 @@
 
 
 
+
+    // ============================================
+    // AI CHATBOT LOGIC
+    // ============================================    // AI CHATBOT LOGIC
+    function toggleChat() {
+        const box = document.getElementById('chat-box');
+        if (!box) return;
+
+        const isHidden = box.style.display === 'none';
+        box.style.display = isHidden ? 'flex' : 'none';
+
+        if (isHidden) {
+            const input = document.getElementById('chat-input');
+            if (input) setTimeout(() => input.focus(), 300);
+            const badge = document.getElementById('chat-badge');
+            if (badge) badge.style.display = 'none';
+
+            // Add initial animation if not already present
+            box.classList.add('animate__fadeInUp');
+        }
+    }
+
+    function sendMessage() {
+        const input = document.getElementById('chat-input');
+        const content = document.getElementById('chat-content');
+        if (!input || !content || !input.value.trim()) return;
+
+        const msg = input.value.trim();
+        input.value = '';
+
+        // Append User Message
+        content.innerHTML += `
+            <div class="d-flex flex-column align-items-end mb-4">
+                <div class="msg-user shadow-sm p-3 rounded-4 bg-primary text-white" style="border-bottom-right-radius: 5px !important;">
+                    ${msg}
+                </div>
+                <small class="text-muted mt-1 me-2" style="font-size: 10px;">Bạn • Vừa xong</small>
+            </div>
+        `;
+        content.scrollTop = content.scrollHeight;
+
+        // Loading bubble
+        content.innerHTML += `
+            <div id="ai-typing" class="d-flex flex-column align-items-start mb-4">
+                <div class="msg-ai shadow-sm p-3 rounded-4 bg-white" style="border-bottom-left-radius: 5px !important;">
+                    <span class="spinner-grow spinner-grow-sm text-primary" role="status"></span>
+                    <span class="ms-1">AI đang suy nghĩ...</span>
+                </div>
+            </div>
+        `;
+        content.scrollTop = content.scrollHeight;
+
+        google.script.run
+            .withSuccessHandler(function (response) {
+                const typing = document.getElementById('ai-typing');
+                if (typing) typing.remove();
+
+                content.innerHTML += `
+                    <div class="d-flex flex-column align-items-start mb-4">
+                        <div class="msg-ai shadow-sm p-3 rounded-4 bg-white" style="border-bottom-left-radius: 5px !important;">
+                            ${response.replace(/\n/g, '<br>')}
+                        </div>
+                        <small class="text-muted mt-1 ms-2" style="font-size: 10px;">AI • Vừa xong</small>
+                    </div>
+                `;
+                content.scrollTop = content.scrollHeight;
+            })
+            .withFailureHandler(function (err) {
+                const typing = document.getElementById('ai-typing');
+                if (typing) typing.remove();
+                Swal.fire('Lỗi Chat', err.toString(), 'error');
+            })
+            .apiChatWithGemini(msg);
+    }
+
+    // ============================================
+    // TICKET & JOB LINKING LOGIC
+    // ============================================
+    function viewLinkedJD() {
+        let ticketId = null;
+        const tickIdInput = document.getElementById('tick-id');
+        if (tickIdInput) {
+            ticketId = tickIdInput.value;
+        } else {
+            const modal = document.getElementById('viewTicketModal');
+            if (modal) {
+                const idHeader = modal.querySelector('.modal-title')?.innerText?.match(/Ticket ID: ([^\s]+)/);
+                if (idHeader) ticketId = idHeader[1];
+            }
+        }
+
+        if (!ticketId) {
+            Swal.fire('Lỗi', 'Không xác định được mã Ticket hiện tại.', 'error');
+            return;
+        }
+
+        google.script.run.withSuccessHandler(function (jobs) {
+            const linkedJob = jobs.find(j => String(j.ticketId || j.TicketID) === String(ticketId));
+            if (linkedJob) {
+                Swal.fire({
+                    title: 'Mô tả công việc (JD)',
+                    html: `<div class="text-start p-3 bg-light rounded" style="max-height: 400px; overflow-y: auto; white-space: pre-wrap;">${linkedJob.description || linkedJob['Mô tả']}</div>`,
+                    width: '700px',
+                    confirmButtonText: 'Đã hiểu'
+                });
+            } else {
+                Swal.fire('Chú ý', 'Ticket này chưa được liên kết với bản Tin tuyển dụng (JD) nào trong danh sách Jobs.', 'info');
+            }
+        }).apiGetTableData('Jobs');
+    }
+
+    function populateJobTicketDropdown() {
+        const ticketSelect = document.getElementById('job-ticket-id');
+        if (!ticketSelect) return;
+
+        // Use ticketsData from global state instead of separate API call for speed
+        if (ticketsData && ticketsData.length > 0) {
+            ticketSelect.innerHTML = '<option value="">-- Chọn Ticket đã tạo --</option>';
+            ticketsData.forEach(t => {
+                const id = t.TicketID || t['Mã Ticket'] || t.ID || 'N/A';
+                const title = t.Position || t['Vị trí'] || t.Title || '';
+                ticketSelect.innerHTML += `<option value="${id}">${id} - ${title}</option>`;
+            });
+        }
+    }
+
+    function populateJobDepartmentDropdown() {
+        const deptSelect = document.getElementById('job-dept');
+        if (!deptSelect) return;
+        deptSelect.innerHTML = '<option value="">-- Chọn Phòng ban --</option>';
+        if (departmentsData && departmentsData.length > 0) {
+            departmentsData.forEach(d => {
+                const name = d.name || d['Phòng ban'] || d['Department'];
+                if (name) deptSelect.innerHTML += `<option value="${name}">${name}</option>`;
+            });
+        }
+    }
+
+    function onJobDepartmentChange() {
+        const deptName = document.getElementById('job-dept').value;
+        const posSelect = document.getElementById('job-position');
+        if (!posSelect) return;
+        posSelect.innerHTML = '<option value="">-- Chọn Vị trí --</option>';
+        if (!deptName) return;
+
+        const deptRecord = departmentsData.find(d => (d.name || d['Phòng ban'] || d['Department']) === deptName);
+        if (deptRecord && deptRecord.positions) {
+            deptRecord.positions.forEach(pos => {
+                posSelect.innerHTML += `<option value="${pos}">${pos}</option>`;
+            });
+        }
+    }
+
+    function populateJobLocationDropdown() {
+        const locSelect = document.getElementById('job-location');
+        if (!locSelect) return;
+        locSelect.innerHTML = '<option value="">-- Chọn Địa điểm --</option>';
+
+        // Try office locations from companyInfo addresses list
+        const offices = initialData.companyInfo?.addresses || initialData.companyInfo?.['addresses'] || [];
+        if (Array.isArray(offices) && offices.length > 0) {
+            offices.forEach(off => {
+                locSelect.innerHTML += `<option value="${off}">${off}</option>`;
+            });
+        } else {
+            // Fallback to the old format or hardcoded
+            const legacyOffices = initialData.companyInfo?.offices || [];
+            if (Array.isArray(legacyOffices) && legacyOffices.length > 0) {
+                legacyOffices.forEach(off => locSelect.innerHTML += `<option value="${off}">${off}</option>`);
+            } else {
+                ['Hà Nội', 'Hồ Chí Minh', 'Đà Nẵng', 'Remote'].forEach(off => {
+                    locSelect.innerHTML += `<option value="${off}">${off}</option>`;
+                });
+            }
+        }
+    }
+
+    document.addEventListener('shown.bs.modal', function (event) {
+        if (event.target.id === 'addJobModal') {
+            populateJobTicketDropdown();
+            populateJobDepartmentDropdown();
+            populateJobLocationDropdown();
+        }
+    });
+
     // 1. SIMPLE NAVIGATION
     function showSection(sectionId, element) {
         // Consolidated RBAC Check
@@ -96,7 +285,7 @@
         }
 
         const evalRoles = ['Admin', 'Manager', 'Recruiter'];
-        if ((sectionId === 'recruitment-hub' || sectionId === 'jobs') && (!currentUser || !evalRoles.includes(currentUser.role))) {
+        if (sectionId === 'evaluations' && (!currentUser || !evalRoles.includes(currentUser.role))) {
             Swal.fire('Truy cập bị từ chối', 'Bạn không có quyền truy cập mục này.', 'error');
             return;
         }
@@ -109,26 +298,24 @@
             document.querySelectorAll('.sidebar .nav-link').forEach(l => l.classList.remove('active'));
             element.classList.add('active');
             const titleMap = {
-                'dashboard': 'Báo cáo Tuyển dụng',
-                'kanban': 'Quy trình Tuyển dụng',
+                'dashboard': 'Tổng Quan Hoạt Động',
+                'kanban': 'Bảng Theo Dõi Ứng Viên (Kanban)',
                 'candidates': 'Danh Sách Ứng Viên',
-                'jobs': 'Quản lý WEB',
+                'jobs': 'Quản Lý Vị Trí Tuyển Dụng',
                 'settings': 'Cài Đặt Hệ Thống',
-                'recruitment-hub': 'Quản lý Tuyển dụng'
+                'evaluations': 'Quản lý Đánh giá Phỏng vấn',
+                'recruitment-hub': 'Quản lý Tuyển dụng (Dự án & Tickets)'
             };
             document.getElementById('page-title').innerText = titleMap[sectionId] || 'Trang Quản Trị';
 
-            if (sectionId === 'jobs') {
-                loadJobs();
-                loadNews(); // Ensure news are loaded in the new Web Management section
-            }
+            if (sectionId === 'jobs') loadJobs();
             if (sectionId === 'settings') loadSettings();
             if (sectionId === 'candidates') renderCandidatesTable();
             if (sectionId === 'kanban') renderKanbanBoard();
+            if (sectionId === 'evaluations') loadEvaluations();
             if (sectionId === 'recruitment-hub') {
                 loadProjects();
                 loadTickets();
-                loadEvaluations(); // Evaluations now part of recruitment-hub
             }
             if (sectionId === 'dashboard') {
                 if (typeof updateDashboardStats === 'function') updateDashboardStats();
@@ -190,40 +377,13 @@
 
     // LISTENER FOR ADD CANDIDATE MODAL TO POPULATE RECRUITERS
     document.addEventListener('DOMContentLoaded', function () {
-        const addModal = document.getElementById('addCandidateModal');
-        if (addModal) {
-            addModal.addEventListener('show.bs.modal', function () {
-                // Populate Recruiter Dropdown
-                populateRecruiterSelect('add-recruiter');
 
-                // Populate Departments if empty (though usually loaded)
-                const deptSelect = document.getElementById('add-department');
-                if (deptSelect && deptSelect.options.length <= 1) {
-                    if (departmentsData.length > 0) {
-                        departmentsData.forEach(d => {
-                            const opt = document.createElement('option');
-                            opt.value = d.name;
-                            opt.innerText = d.name;
-                            deptSelect.appendChild(opt);
-                        });
-                    }
-                }
-
-                // Populate Stages
-                const stageSelect = document.getElementById('add-stage');
-                if (stageSelect) {
-                    stageSelect.innerHTML = '<option value="">Chọn giai đoạn</option>';
-                    if (stagesData.length > 0) {
-                        const sorted = [...stagesData].sort((a, b) => a.Order - b.Order);
-                        sorted.forEach(s => {
-                            const opt = document.createElement('option');
-                            opt.value = s.Stage_Name;
-                            opt.innerText = s.Stage_Name;
-                            if (s.Stage_Name === 'Apply' || s.Stage_Name === 'Ứng tuyển') opt.selected = true;
-                            stageSelect.appendChild(opt);
-                        });
-                    }
-                }
+        // Handle dynamically changing status dropdown based on selected Ticket
+        const detailTicketId = document.getElementById('detail-ticket-id');
+        if (detailTicketId) {
+            detailTicketId.addEventListener('change', function () {
+                const currentStatus = document.getElementById('detail-status')?.value;
+                populateStatusDropdown(currentStatus);
             });
         }
     });
@@ -313,23 +473,21 @@
             if (navSettings) navSettings.style.display = 'block';
         }
 
-        // 2. Web Management Access (Admin, Recruiter)
+        // 2. Jobs Access (Admin Only)
         const navJobs = document.getElementById('nav-jobs');
-        if (navJobs) {
-            if (role === 'Admin' || role === 'Recruiter') {
-                navJobs.style.display = 'block';
-            } else {
-                navJobs.style.display = 'none';
-            }
+        if (role !== 'Admin') {
+            if (navJobs) navJobs.style.display = 'none';
+        } else {
+            if (navJobs) navJobs.style.display = 'block';
         }
 
-        // 3. Recruitment Management Access (Admin, Manager, Recruiter)
-        const navRecHub = document.getElementById('nav-recruitment-hub');
-        if (navRecHub) {
+        // 3. Evaluations Access (Admin, Manager, Recruiter)
+        const navEvals = document.getElementById('nav-evaluations');
+        if (navEvals) {
             if (role === 'Admin' || role === 'Manager' || role === 'Recruiter') {
-                navRecHub.style.display = 'block';
+                navEvals.style.display = 'block';
             } else {
-                navRecHub.style.display = 'none';
+                navEvals.style.display = 'none';
             }
         }
 
@@ -358,75 +516,36 @@
     }
 
     function updateDashboardStats() {
-        console.log('📊 Updating Dashboard Stats...');
+        document.getElementById('stat-total-candidates').innerText = candidatesData.length;
 
-        // Get Filters
-        const project = document.getElementById('report-filter-project')?.value || '';
-        const dateFrom = document.getElementById('report-filter-from')?.value || '';
-        const dateTo = document.getElementById('report-filter-to')?.value || '';
-
-        let filtered = [...candidatesData];
-
-        // 1. Project Filter
-        if (project) {
-            filtered = filtered.filter(c => {
-                const tID = getVal(c, 'TicketID');
-                if (!tID) return false;
-                const t = ticketsData.find(x => x['Mã Ticket'] == tID);
-                return t && t['Mã Dự án'] === project;
-            });
-        }
-
-        // 2. Date Range Filter
-        if (dateFrom || dateTo) {
-            filtered = filtered.filter(c => {
-                const appliedStr = getVal(c, 'Applied_Date') || getVal(c, 'Ngày ứng tuyển');
-                if (!appliedStr) return false;
-                const d = new Date(appliedStr);
-                if (isNaN(d.getTime())) return false;
-                if (dateFrom && d < new Date(dateFrom)) return false;
-                if (dateTo) {
-                    const to = new Date(dateTo);
-                    to.setHours(23, 59, 59);
-                    if (d > to) return false;
-                }
-                return true;
-            });
-        }
-
-        // Update Stat Cards
-        document.getElementById('stat-total-candidates').innerText = filtered.length;
-
-        const hiredCount = filtered.filter(c => {
-            const s = (getVal(c, 'Status') || getVal(c, 'Stage') || '').toLowerCase();
-            return s.includes('hired') || s.includes('nhận việc') || s.includes('offer');
-        }).length;
-
-        const interviewCount = filtered.filter(c => {
-            const s = (getVal(c, 'Status') || getVal(c, 'Stage') || '').toLowerCase();
-            return s.includes('interview') || s.includes('phỏng vấn');
-        }).length;
-
-        const rejectedCount = filtered.filter(c => {
-            const s = (getVal(c, 'Status') || getVal(c, 'Stage') || '').toLowerCase();
-            return s.includes('rejected') || s.includes('loại');
-        }).length;
+        // Calculate stats based on Status/Stage
+        const hiredCount = candidatesData.filter(c => c.Status === 'Offer' || c.Status === 'Hired').length;
+        const interviewCount = candidatesData.filter(c => c.Status === 'Interview' || c.Status === 'Phỏng vấn').length;
+        const rejectedCount = candidatesData.filter(c => c.Status === 'Rejected' || c.Status === 'Loại').length;
 
         document.getElementById('stat-hired').innerText = hiredCount;
         document.getElementById('stat-interviewing').innerText = interviewCount;
         document.getElementById('stat-rejected').innerText = rejectedCount;
 
-        // Update Charts
-        updateCharts(filtered);
+        // Update Chart if exists
+        updateCharts();
     }
 
-    function updateCharts(data = candidatesData) {
-        if (typeof renderDashboardCharts === 'function') {
-            renderDashboardCharts(data);
-        } else {
-            console.warn('renderDashboardCharts not found, falling back to legacy updateCharts logic');
-            // Legacy/Inline chart update if needed
-        }
+    function updateCharts() {
+        // Group by Month (Created Date)
+        const monthCounts = Array(12).fill(0);
+        candidatesData.forEach(c => {
+            if (c.Applied_Date) {
+                const d = new Date(c.Applied_Date);
+                if (!isNaN(d)) monthCounts[d.getMonth()]++;
+            }
+        });
+
+        // We need to access the chart instance. 
+        // Since we created it in DOMContentLoaded, let's attach it to window or re-create.
+        // For simplicity, let's just trigger a re-render if the canvas exists and we have a global ref, 
+        // or easier: just destroy and recreate if we can access the context.
+        // Actually, let's look at the init code.
     }
 
     // 4. RENDER KANBAN
@@ -434,13 +553,16 @@
         const container = document.getElementById('kanban-container');
         if (!container) return;
 
-        // Populate Advanced Filters UI (from candidates logic but adapted for Kanban)
+        // Populate Project Filter if empty
         const projFilter = document.getElementById('kanban-filter-project');
-        const projectCode = projFilter ? projFilter.value : '';
-        const ticketId = document.getElementById('kanban-filter-ticket')?.value || '';
-        const deptFilter = document.getElementById('kanban-filter-dept')?.value || '';
-        const posFilter = document.getElementById('kanban-filter-pos')?.value || '';
-        const searchQ = document.getElementById('kanban-search')?.value.toLowerCase() || '';
+        if (projFilter && projFilter.options.length <= 1 && projectsData.length > 0) {
+            projectsData.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p['Mã Dự án'];
+                opt.innerText = p['Tên Dự án'];
+                projFilter.appendChild(opt);
+            });
+        }
 
         // Show loading indicator
         const loadingIndicator = document.getElementById('kanban-loading');
@@ -452,6 +574,7 @@
         });
 
         // Determine which stages to use
+        const projectCode = projFilter ? projFilter.value : '';
         const selectedProject = projectsData.find(p => p['Mã Dự án'] === projectCode);
 
         let dynamicStages = [];
@@ -463,51 +586,41 @@
                 Color: '#FFC107'
             }));
         } else {
-            dynamicStages = [...stagesData];
+            dynamicStages = (stagesData && stagesData.length > 0) ? [...stagesData] : [
+                { Stage_Name: 'Apply', Order: 1, Color: '#0d6efd' },
+                { Stage_Name: 'Interview', Order: 2, Color: '#fd7e14' },
+                { Stage_Name: 'Offer', Order: 3, Color: '#198754' },
+                { Stage_Name: 'Rejected', Order: 4, Color: '#dc3545' }
+            ];
         }
         dynamicStages.sort((a, b) => a.Order - b.Order);
 
         // DEDUPLICATE and FILTER candidates
         const seen = new Set();
-        let filtered = candidatesData.filter(c => {
+        let uniqueCandidates = candidatesData.filter(c => {
             if (seen.has(c.ID)) return false;
             seen.add(c.ID);
             return true;
         });
 
-        // Project/Ticket Filter
-        if (projectCode || ticketId) {
-            filtered = filtered.filter(c => {
+        // Filter by Project if selected
+        if (projectCode) {
+            uniqueCandidates = uniqueCandidates.filter(c => {
                 const tID = getVal(c, 'TicketID');
                 if (!tID) return false;
                 const t = ticketsData.find(x => x['Mã Ticket'] == tID);
-                if (!t) return false;
-                if (projectCode && t['Mã Dự án'] !== projectCode) return false;
-                if (ticketId && String(tID) !== String(ticketId)) return false;
-                return true;
+                return t && t['Mã Dự án'] === projectCode;
             });
         }
 
-        // Dept/Pos Filters
-        if (deptFilter) filtered = filtered.filter(c => getVal(c, 'Department') === deptFilter);
-        if (posFilter) filtered = filtered.filter(c => getVal(c, 'Position') === posFilter);
-
         // Search Filter
+        const searchQ = document.getElementById('kanban-search')?.value.toLowerCase() || '';
         if (searchQ) {
-            filtered = filtered.filter(c =>
+            uniqueCandidates = uniqueCandidates.filter(c =>
                 (c.Name || '').toLowerCase().includes(searchQ) ||
-                (c.ID || '').toString().toLowerCase().includes(searchQ) ||
-                (c.Email || '').toLowerCase().includes(searchQ) ||
-                (c.Phone || '').toLowerCase().includes(searchQ)
+                (c.ID || '').toString().toLowerCase().includes(searchQ)
             );
         }
-
-        // Update Tech Header Stats
-        const totalCountEl = document.getElementById('kanban-total-count');
-        if (totalCountEl) totalCountEl.innerText = filtered.length;
-
-        const stageCountEl = document.getElementById('kanban-stage-count');
-        if (stageCountEl) stageCountEl.innerText = dynamicStages.length;
 
         const fragment = document.createDocumentFragment();
 
@@ -524,12 +637,14 @@
          </div>
        `;
 
+            // Append to fragment instead of container (FASTER!)
             fragment.appendChild(col);
 
             // Filter candidates for this stage
-            const candidatesInStage = filtered.filter(c => {
-                const candidateStatus = (getVal(c, 'Status') || '').toString().trim();
-                const candidateStage = (getVal(c, 'Stage') || '').toString().trim();
+            // Try both Status and Stage fields, case-insensitive
+            const candidatesInStage = uniqueCandidates.filter(c => {
+                const candidateStatus = (c.Status || '').toString().trim();
+                const candidateStage = (c.Stage || '').toString().trim();
                 const stageName = stage.Stage_Name.toString().trim();
 
                 return candidateStatus.toLowerCase() === stageName.toLowerCase() ||
@@ -538,6 +653,11 @@
 
             const itemsContainer = col.querySelector('.kanban-items');
             col.querySelector('.count-badge').innerText = candidatesInStage.length;
+
+            // Debug logging
+            if (candidatesInStage.length > 0) {
+                console.log(`Stage "${stage.Stage_Name}" has ${candidatesInStage.length} candidates:`, candidatesInStage);
+            }
 
             candidatesInStage.forEach(c => {
                 const card = document.createElement('div');
@@ -550,42 +670,70 @@
                 const avatarColors = ['#007bff', '#28a745', '#dc3545', '#ffc107', '#17a2b8', '#6f42c1', '#e83e8c'];
                 const avatarColor = avatarColors[Math.abs(hashCode(c.ID || '')) % avatarColors.length];
 
-                // Determine sub-status badge (if any)
+                // Determine status badge
                 let statusBadge = '';
-                const subStatus = getVal(c, 'SubStatus') || '';
-                if (subStatus) {
-                    statusBadge = `<span class="badge bg-info ms-2" style="font-size: 0.6rem;">${subStatus}</span>`;
+                if (c.Status) {
+                    const badgeColors = {
+                        'Mới tiếp nhận': 'primary',
+                        'Đã liên lạc': 'success',
+                        'Chờ phản hồi': 'warning',
+                        'Đang trao đổi': 'info'
+                    };
+                    const badgeClass = badgeColors[c.Status] || 'secondary';
+                    statusBadge = `<span class="badge bg-${badgeClass} ms-2" style="font-size: 0.7rem;">${c.Status}</span>`;
                 }
 
                 card.innerHTML = `
                     <div class="d-flex align-items-start mb-2">
-                        <div class="candidate-avatar me-2" style="background: ${avatarColor}; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px;">
+                        <div class="candidate-avatar me-2" style="background: ${avatarColor}; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px;">
                             ${initials}
                         </div>
                         <div class="flex-grow-1">
-                            <h6 class="mb-0 fw-bold" style="font-size: 0.85rem;">${c.Name || 'N/A'}</h6>
+                            <h6 class="mb-0 fw-bold" style="font-size: 0.95rem;">${c.Name || 'N/A'}</h6>
                             ${statusBadge}
                         </div>
                     </div>
-                    <p class="mb-1 small text-muted text-truncate"><i class="fas fa-briefcase me-1"></i>${getVal(c, 'Position') || 'N/A'}</p>
+                    <p class="mb-1 small text-muted"><i class="fas fa-briefcase me-1"></i>${c.Position || 'N/A'}</p>
+                    <p class="mb-1 small text-muted"><i class="fas fa-envelope me-1"></i>${c.Email || 'N/A'}</p>
+                    <p class="mb-1 small text-muted"><i class="fas fa-phone me-1"></i>${c.Phone || 'N/A'}</p>
+                    ${c.Recruiter ? `<p class="mb-2 small text-muted"><i class="fas fa-user-tie me-1"></i>${c.Recruiter}</p>` : ''}
                     <div class="d-flex justify-content-between align-items-center mt-2 pt-2" style="border-top: 1px solid #eee;">
-                        <small class="text-muted" style="font-size: 0.7rem;">${getVal(c, 'Applied_Date') ? new Date(getVal(c, 'Applied_Date')).toLocaleDateString('vi-VN') : ''}</small>
+                        <small class="text-muted">${c.Applied_Date ? new Date(c.Applied_Date).toLocaleDateString('vi-VN') : ''}</small>
                         <div class="btn-group btn-group-sm" role="group">
-                             ${(!currentUser || currentUser.role !== 'Viewer') ? `
-                            <button class="btn btn-outline-secondary btn-xs p-1" title="Gửi email" onclick="event.stopPropagation(); openSendEmailModal('${c.ID}');">
-                                <i class="fas fa-envelope" style="font-size: 0.65rem;"></i>
+                            <!-- Helper for Viewer Check -->
+                            ${(!currentUser || currentUser.role !== 'Viewer') ? `
+                            <button class="btn btn-outline-secondary btn-sm p-1" title="Gửi email" onclick="event.stopPropagation(); openSendEmailModal('${c.ID}');">
+                                <i class="fas fa-envelope" style="font-size: 0.75rem;"></i>
                             </button>
                             ` : ''}
                             
-                            ${getVal(c, 'CV_Link') ? `
-                            <button class="btn btn-outline-info btn-xs p-1" title="Xem CV" onclick="event.stopPropagation(); viewCandidateCV('${getVal(c, 'CV_Link')}');">
-                                <i class="fas fa-file-alt" style="font-size: 0.65rem;"></i>
+                            <!-- VIEW CV BUTTON -->
+                            ${c.CV_Link ? `
+                            <button class="btn btn-outline-info btn-sm p-1" title="Xem CV" onclick="event.stopPropagation(); viewCandidateCV('${c.CV_Link}');">
+                                <i class="fas fa-file-alt" style="font-size: 0.75rem;"></i>
                             </button>
                             ` : ''}
 
-                            <button class="btn btn-outline-primary btn-xs p-1" title="Xem chi tiết" onclick="event.stopPropagation(); openCandidateDetail('${c.ID}');">
-                                <i class="fas fa-eye" style="font-size: 0.65rem;"></i>
+                            <!-- EVALUATION BUTTON (Only for Interview Stage) -->
+                            ${(stage.Stage_Name.toLowerCase().includes('phỏng vấn') || stage.Stage_Name.toLowerCase().includes('interview')) ? `
+                            <button class="btn btn-outline-success btn-sm p-1" title="Tạo Đánh giá" onclick="event.stopPropagation(); openCreateEvaluationModal('${c.ID}');">
+                                <i class="fas fa-clipboard-check" style="font-size: 0.75rem;"></i>
                             </button>
+                            ` : ''}
+
+                            <button class="btn btn-outline-primary btn-sm p-1" title="Xem chi tiết" onclick="event.stopPropagation(); openCandidateDetail('${c.ID}');">
+                                <i class="fas fa-eye" style="font-size: 0.75rem;"></i>
+                            </button>
+                            ${(!currentUser || currentUser.role !== 'Viewer') ? `
+                            <button class="btn btn-outline-warning btn-sm p-1" title="Sửa" onclick="event.stopPropagation(); editCandidate('${c.ID}');">
+                                <i class="fas fa-edit" style="font-size: 0.75rem;"></i>
+                            </button>
+                            <button class="btn btn-outline-danger btn-sm p-1" title="Xóa" onclick="event.stopPropagation(); deleteCandidate('${c.ID}');">
+                                <i class="fas fa-trash" style="font-size: 0.75rem;"></i>
+                            </button>
+                            ` : ''}
+                        </div>
+                    </div>
                         </div>
                     </div>
                 `;
@@ -595,9 +743,11 @@
                 card.addEventListener('mousedown', () => { isDragging = false; });
                 card.addEventListener('mousemove', () => { isDragging = true; });
 
-                // Click on card to open detail
+                // Click on card to open detail (only if not dragging AND not clicking on buttons)
                 card.addEventListener('mouseup', function (e) {
+                    // Check if click is on a button or inside button group
                     const clickedOnButton = e.target.closest('button') || e.target.closest('.btn-group');
+
                     if (!isDragging && !clickedOnButton) {
                         setTimeout(() => openCandidateDetail(c.ID), 100);
                     }
@@ -608,30 +758,53 @@
             });
 
             // Init Sortable for this column
-            if (typeof Sortable !== 'undefined' && (!currentUser || currentUser.role !== 'Viewer')) {
-                new Sortable(itemsContainer, {
-                    group: 'kanban-shared',
-                    animation: 200,
-                    ghostClass: 'sortable-ghost',
-                    onEnd: function (evt) {
-                        const itemEl = evt.item;
-                        const newStage = evt.to.getAttribute('data-stage');
-                        const candidateId = itemEl.getAttribute('data-id');
-                        const oldStage = evt.from.getAttribute('data-stage');
+            if (typeof Sortable === 'undefined') {
+                console.error('❌ Sortable library not loaded!');
+            } else {
+                if (!currentUser || currentUser.role !== 'Viewer') {
+                    console.log(`✅ Initializing Sortable for stage: ${stage.Stage_Name}`);
+                    new Sortable(itemsContainer, {
+                        group: 'kanban-shared',
+                        animation: 200,
+                        ghostClass: 'sortable-ghost',
+                        chosenClass: 'sortable-chosen',
+                        dragClass: 'sortable-drag',
+                        forceFallback: true,
+                        fallbackClass: 'sortable-fallback',
+                        fallbackOnBody: true,
+                        swapThreshold: 0.65,
+                        onStart: function (evt) {
+                            console.log('🚀 Drag started');
+                            evt.item.style.opacity = '0.5';
+                        },
+                        onEnd: function (evt) {
+                            evt.item.style.opacity = '1';
 
-                        if (newStage && candidateId && newStage !== oldStage) {
-                            if (newStage.toLowerCase().includes('loại') || newStage.toLowerCase().includes('reject')) {
-                                promptRejectionReason(function (rejectionData) {
-                                    executeStatusUpdate(candidateId, newStage, rejectionData);
-                                }, function () {
-                                    loadDashboardData();
-                                });
+                            const itemEl = evt.item;
+                            const newStage = evt.to.getAttribute('data-stage');
+                            const candidateId = itemEl.getAttribute('data-id');
+                            const oldStage = evt.from.getAttribute('data-stage');
+
+                            console.log('🔄 Drag ended - From:', oldStage, 'To:', newStage, 'ID:', candidateId);
+
+                            // Only update if stage actually changed
+                            if (newStage && candidateId && newStage !== oldStage) {
+                                if (newStage.toLowerCase().includes('loại') || newStage.toLowerCase().includes('reject')) {
+                                    promptRejectionReason(function (rejectionData) {
+                                        executeStatusUpdate(candidateId, newStage, rejectionData);
+                                    }, function () {
+                                        // On cancel, revert
+                                        loadDashboardData();
+                                    });
+                                } else {
+                                    executeStatusUpdate(candidateId, newStage, null);
+                                }
                             } else {
-                                executeStatusUpdate(candidateId, newStage, null);
+                                console.log('⏭️ Stage unchanged, no update needed');
                             }
                         }
-                    }
-                });
+                    });
+                }
             }
         });
 
@@ -694,93 +867,17 @@
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        // Apply Advanced Filters
-        const searchQ = document.getElementById('candidates-search')?.value.toLowerCase() || '';
-        const project = document.getElementById('filter-candidate-project')?.value || '';
-        const ticket = document.getElementById('filter-candidate-ticket')?.value || '';
-        const dept = document.getElementById('filter-candidate-dept')?.value || '';
-        const pos = document.getElementById('filter-candidate-pos')?.value || '';
-        const stage = document.getElementById('filter-candidate-stage')?.value || '';
-        const status = document.getElementById('filter-candidate-status')?.value || '';
-        const dateFrom = document.getElementById('filter-candidate-date-from')?.value || '';
-        const dateTo = document.getElementById('filter-candidate-date-to')?.value || '';
-
-        let filtered = [...candidatesData];
-
-        // Search Filter (ID, Name, Email, Phone)
-        if (searchQ) {
-            filtered = filtered.filter(c =>
-                (c.ID || '').toString().toLowerCase().includes(searchQ) ||
-                (c.Name || '').toLowerCase().includes(searchQ) ||
-                (c.Email || '').toLowerCase().includes(searchQ) ||
-                (c.Phone || '').toLowerCase().includes(searchQ)
-            );
-        }
-
-        // Project/Ticket Filter
-        if (project || ticket) {
-            filtered = filtered.filter(c => {
-                const tID = getVal(c, 'TicketID');
-                if (!tID) return false;
-                const t = ticketsData.find(x => x['Mã Ticket'] == tID);
-                if (!t) return false;
-                if (project && t['Mã Dự án'] !== project) return false;
-                if (ticket && String(tID) !== String(ticket)) return false;
-                return true;
-            });
-        }
-
-        // Department Filter
-        if (dept) {
-            filtered = filtered.filter(c => (getVal(c, 'Department') || '') === dept);
-        }
-
-        // Position Filter
-        if (pos) {
-            filtered = filtered.filter(c => (getVal(c, 'Position') || '') === pos);
-        }
-
-        // Stage Filter
-        if (stage) {
-            filtered = filtered.filter(c => (getVal(c, 'Stage') || '') === stage);
-        }
-
-        // Status Filter
-        if (status) {
-            filtered = filtered.filter(c => (getVal(c, 'Status') || '') === status);
-        }
-
-        // Date Range Filter
-        if (dateFrom || dateTo) {
-            filtered = filtered.filter(c => {
-                const appliedStr = getVal(c, 'Applied_Date') || getVal(c, 'Ngày ứng tuyển');
-                if (!appliedStr) return false;
-                const appliedDate = new Date(appliedStr);
-                if (isNaN(appliedDate.getTime())) return false;
-
-                if (dateFrom && appliedDate < new Date(dateFrom)) return false;
-                if (dateTo) {
-                    const to = new Date(dateTo);
-                    to.setHours(23, 59, 59);
-                    if (appliedDate > to) return false;
-                }
-                return true;
-            });
-        }
-
-        document.getElementById('candidate-count-display').innerText = filtered.length;
-
         // Use document fragment for batch DOM update
         const fragment = document.createDocumentFragment();
 
-        filtered.forEach(c => {
+        candidatesData.forEach(c => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
            <td>${c.ID}</td>
            <td class="fw-bold cursor-pointer text-primary" onclick="openCandidateDetail('${c.ID}')">${c.Name}</td>
-           <td>${getVal(c, 'Position') || ''}</td>
-           <td>${getVal(c, 'Applied_Date') ? new Date(getVal(c, 'Applied_Date')).toLocaleDateString('vi-VN') : ''}</td>
-           <td><span class="badge bg-info text-dark">${getVal(c, 'Stage') || getVal(c, 'Status') || ''}</span></td>
+           <td>${c.Position}</td>
+           <td>${c.Applied_Date ? new Date(c.Applied_Date).toLocaleDateString() : ''}</td>
+           <td><span class="badge bg-info text-dark">${c.Status}</span></td>
            <td>
              <div class="btn-group btn-group-sm">
                 ${(!currentUser || currentUser.role !== 'Viewer') ? `
@@ -789,8 +886,8 @@
                 </button>
                 ` : ''}
 
-                ${getVal(c, 'CV_Link') ? `
-                <button class="btn btn-outline-info btn-sm" title="Xem CV" onclick="viewCandidateCV('${getVal(c, 'CV_Link')}')">
+                ${c.CV_Link ? `
+                <button class="btn btn-outline-info btn-sm" title="Xem CV" onclick="viewCandidateCV('${c.CV_Link}')">
                     <i class="fas fa-file-alt"></i>
                 </button>
                 ` : ''}
@@ -856,268 +953,166 @@
     }
 
     // 9. CANDIDATE DETAILS
-    function openCandidateDetail(id, mode = 'edit') {
-        console.log('Opening candidate detail for ID:', id, 'Mode:', mode);
-        const isNew = !id;
+    // -------------------------------------------------------------------------
+    // 4. CANDIDATE DETAIL MODAL LOGIC (OPEN/SAVE)
+    // -------------------------------------------------------------------------
+
+    // OPEN CANDIDATE DETAIL MODAL
+    function openCandidateDetail(candidateId = null, mode = 'edit') {
         const modal = document.getElementById('candidateDetailModal');
+        const form = document.getElementById('edit-candidate-form');
         const modalTitle = modal.querySelector('.modal-title');
         const saveBtn = modal.querySelector('.modal-footer .btn-primary');
-        const reqEvalBtn = modal.querySelector('#btn-request-eval');
-        const notesHistoryDiv = modal.querySelector('#detail-notes-history');
-        const idInput = modal.querySelector('#current-candidate-id');
-        const form = modal.querySelector('#edit-candidate-form');
+        const notesHistoryDiv = document.getElementById('detail-notes-history');
 
-        // Reset Mode attributes
+        // Reset Tabs - always start with the first tab
+        const firstTabEl = document.querySelector('#candidateTabs .nav-link:first-child');
+        if (firstTabEl) {
+            const firstTab = bootstrap.Tab.getOrCreateInstance(firstTabEl);
+            firstTab.show();
+        }
+
         modal.setAttribute('data-mode', mode);
         window._currentCandidateStage = '';
 
-        // Reset Form
-        idInput.value = id || '';
-        modal.querySelector('#detail-name').value = '';
-        modal.querySelector('#detail-gender').value = '';
-        modal.querySelector('#detail-dob').value = '';
-        modal.querySelector('#detail-phone').value = '';
-        modal.querySelector('#detail-email').value = '';
-        modal.querySelector('#detail-experience').value = '';
-        modal.querySelector('#detail-school').value = '';
-        modal.querySelector('#detail-education-level').value = '';
-        modal.querySelector('#detail-major').value = '';
-        modal.querySelector('#detail-salary').value = '';
-        modal.querySelector('#detail-source').value = '';
-        modal.querySelector('#detail-new-note').value = '';
-        modal.querySelector('#detail-cv-link').value = '';
+        if (!candidateId) {
+            // NEW MODE
+            if (form) form.reset();
+            const idInput = document.getElementById('current-candidate-id');
+            if (idInput) idInput.value = '';
+            modalTitle.innerHTML = '<i class="fas fa-user-plus me-2"></i>Thêm ứng viên mới';
 
-        // Configure View/Edit access
-        const isViewOnly = mode === 'view';
-        form.querySelectorAll('input, select, textarea').forEach(el => {
-            if (el.id !== 'detail-new-note') { // Allow adding notes even in view mode? 
-                // User said "xem hồ sơ mà không sửa được", usually means profile data is read-only.
-                // Let's make everything read-only in view mode for safety.
-                if (el.tagName === 'SELECT') el.disabled = isViewOnly;
-                else el.readOnly = isViewOnly;
+            // RESET AI MATCH UI
+            resetAiMatchUI();
+
+            if (saveBtn) {
+                saveBtn.innerHTML = '<i class="fas fa-plus me-2"></i>Tạo Hồ sơ';
+                saveBtn.style.display = 'block';
+                saveBtn.onclick = saveCandidateDetail;
             }
-        });
 
-        // Specifically for file upload
-        const uploadBtn = modal.querySelector('button[onclick*="detail-cv-file"]');
-        if (uploadBtn) uploadBtn.disabled = isViewOnly;
+            if (notesHistoryDiv) notesHistoryDiv.innerHTML = '<div class="text-center text-muted py-3">Chưa có ghi chú.</div>';
 
-        if (isViewOnly) {
-            modalTitle.innerText = 'Chi tiết Ứng viên (Chỉ xem)';
-            saveBtn.style.display = 'none';
-        } else {
-            saveBtn.style.display = 'block';
-            saveBtn.innerText = isNew ? 'Lưu Hồ Sơ' : 'Cập nhật Thay đổi';
-        }
-
-        if (isNew) {
-            modalTitle.innerText = 'Thêm Ứng Viên Mới';
-            saveBtn.innerText = 'Lưu Hồ Sơ';
-            if (reqEvalBtn) reqEvalBtn.style.display = 'none';
-
-            if (notesHistoryDiv) notesHistoryDiv.innerText = 'Chưa có lịch sử ghi chú.';
             // Populate Dropdowns with defaults
-            populateDepartmentDropdown('', () => populatePositionDropdown(''));
-            populateTicketDropdown('');
-            populateRecruiterSelect('detail-recruiter', '');
-            populateStatusDropdown('Apply'); // Default stage
-            modal.querySelector('#detail-contact-status').value = 'Mới tiếp nhận';
+            if (typeof populateDepartmentDropdown === 'function') {
+                populateDepartmentDropdown('', () => {
+                    if (typeof populatePositionDropdown === 'function') populatePositionDropdown('');
+                });
+            }
+            if (typeof populateTicketDropdown === 'function') populateTicketDropdown('');
+            if (typeof populateRecruiterSelect === 'function') populateRecruiterSelect('detail-recruiter', '');
+            if (typeof populateStatusDropdown === 'function') populateStatusDropdown('Apply');
+
+            const contactStatus = document.getElementById('detail-contact-status');
+            if (contactStatus) contactStatus.value = 'Mới tiếp nhận';
 
             new bootstrap.Modal(modal).show();
             return;
         }
 
-        // EDIT MODE
-        const c = candidatesData.find(x => x.ID == id);
-        if (!c && !isNew) {
-            console.error('Candidate not found:', id);
-            Swal.fire('Lỗi', 'Không tìm thấy ứng viên', 'error');
-            return;
-        }
-
-        window._currentCandidateStage = c ? getVal(c, 'Stage') : 'Apply';
-        modalTitle.innerText = mode === 'view' ? 'Chi tiết Ứng viên (Xem)' : (isNew ? 'Thêm Ứng Viên Mới' : 'Chỉnh sửa Ứng viên');
-        saveBtn.innerText = isNew ? 'Lưu Hồ Sơ' : 'Cập nhật Thay đổi';
-
+        // EDIT/VIEW MODE
+        const c = candidatesData.find(x => x.ID == candidateId);
         if (!c) {
-            console.error('Candidate not found:', id);
-            Swal.fire('Lỗi', 'Không tìm thấy ứng viên', 'error');
+            Swal.fire('Lỗi', 'Không tìm thấy thông tin ứng viên', 'error');
             return;
         }
 
-        // Populate department dropdown first, then position
-        populateDepartmentDropdown(c.Department, function () {
-            populatePositionDropdown(c.Position);
-        });
-        populateTicketDropdown(getVal(c, 'TicketID'));
+        document.getElementById('current-candidate-id').value = c.ID;
+        modal.setAttribute('data-candidate-id', c.ID);
+        modalTitle.innerHTML = `<i class="fas fa-user-edit me-2"></i>Chi tiết: ${c.Name || 'Ứng viên'}`;
 
-        // Helper to get value using Aliases on Frontend
-        function getVal(c, key) {
-            if (c[key] !== undefined) return c[key];
-            const aliases = (aliasData && aliasData[key]) ? aliasData[key] : [];
-            for (let a of aliases) {
-                if (c[a] !== undefined) return c[a];
+        // RESET AI MATCH UI
+        resetAiMatchUI();
+        window._currentCandidateStage = c.Stage || '';
+
+        // Map data to fields
+        document.getElementById('detail-name').value = c.Name || '';
+        document.getElementById('detail-gender').value = c.Gender || '';
+        document.getElementById('detail-dob').value = c.Birth_Year || '';
+        document.getElementById('detail-phone').value = c.Phone || '';
+        document.getElementById('detail-email').value = c.Email || '';
+        document.getElementById('detail-department').value = c.Department || '';
+        document.getElementById('detail-position').value = c.Position || '';
+        document.getElementById('detail-experience').value = c.Experience || '';
+        document.getElementById('detail-school').value = c.School || '';
+        document.getElementById('detail-education-level').value = c.Education_Level || '';
+        document.getElementById('detail-major').value = c.Major || '';
+        document.getElementById('detail-salary').value = c.Salary_Expectation || '';
+        document.getElementById('detail-source').value = c.Source || '';
+        document.getElementById('detail-recruiter').value = c.Recruiter || '';
+        document.getElementById('detail-status').value = c.Stage || '';
+        document.getElementById('detail-contact-status').value = c.Status || '';
+        document.getElementById('detail-cv-link').value = c.CV_Link || '';
+
+        // Rejection Data
+        if (document.getElementById('detail-rejection-source')) document.getElementById('detail-rejection-source').value = c.Rejection_Source || '';
+        if (document.getElementById('detail-rejection-type')) document.getElementById('detail-rejection-type').value = c.Rejection_Type || '';
+        if (document.getElementById('detail-rejection-reason')) document.getElementById('detail-rejection-reason').value = c.Rejection_Reason || '';
+
+        // Populate dynamic dropdowns
+        if (typeof populateTicketDropdown === 'function') populateTicketDropdown(c.TicketID);
+
+        // Handle Visibility of Rejection tracking
+        const rejectionSection = document.getElementById('rejection-detail-section');
+        const isRejected = (c.Stage || '').toLowerCase().includes('loại') || (c.Stage || '').toLowerCase().includes('reject') || (c.Stage || '').toLowerCase().includes('từ chối');
+        if (rejectionSection) rejectionSection.style.display = isRejected ? 'block' : 'none';
+
+        // Note history
+        renderNoteHistory(c.Notes, notesHistoryDiv);
+        document.getElementById('detail-new-note').value = '';
+
+        // Configure Save/Close Button
+        if (saveBtn) {
+            if (mode === 'view') {
+                saveBtn.innerHTML = '<i class="fas fa-times me-2"></i>Đóng';
+                saveBtn.classList.remove('btn-primary');
+                saveBtn.classList.add('btn-secondary');
+                saveBtn.onclick = () => bootstrap.Modal.getInstance(modal).hide();
+            } else {
+                saveBtn.innerHTML = '<i class="fas fa-save me-2"></i>Cập nhật Hồ sơ';
+                saveBtn.classList.add('btn-primary');
+                saveBtn.classList.remove('btn-secondary');
+                saveBtn.style.display = 'block';
+                saveBtn.onclick = saveCandidateDetail;
             }
-            return '';
         }
 
-        // Populate all other detail fields using the helper
-        modal.querySelector('#detail-name').value = getVal(c, 'Name');
-        modal.querySelector('#detail-phone').value = getVal(c, 'Phone');
-        modal.querySelector('#detail-email').value = getVal(c, 'Email');
-        modal.querySelector('#detail-experience').value = getVal(c, 'Experience');
+        // Configure Related Action Buttons (Connect to Hub/Email/PDF)
+        const hubBtn = modal.querySelector('button[onclick="openDocumentHub()"]');
+        if (hubBtn) hubBtn.onclick = () => openDocumentHub(c.ID);
 
-        modal.querySelector('#detail-school').value = getVal(c, 'School');
-        modal.querySelector('#detail-education-level').value = getVal(c, 'Education_Level');
-        modal.querySelector('#detail-major').value = getVal(c, 'Major');
-        modal.querySelector('#detail-dob').value = getVal(c, 'Birth_Year');
-        modal.querySelector('#detail-gender').value = getVal(c, 'Gender');
+        const pdfBtn = modal.querySelector('button[onclick="exportCandidateToPDF()"]');
+        if (pdfBtn) pdfBtn.onclick = () => exportCandidatePDF(c.ID);
 
-        modal.querySelector('#detail-salary').value = getVal(c, 'Salary_Expectation');
-        modal.querySelector('#detail-source').value = getVal(c, 'Source');
-        populateRecruiterSelect('detail-recruiter', getVal(c, 'Recruiter'));
-        populateStatusDropdown(getVal(c, 'Stage'));
-        modal.querySelector('#detail-contact-status').value = getVal(c, 'Status');
+        const emailBtn = modal.querySelector('button[onclick="openSendEmail()"]');
+        if (emailBtn) emailBtn.onclick = () => openSendEmailModal(c.ID);
 
-        // --- TRACKING FIELDS POPULATION ---
-        const trackingSec = modal.querySelector('#tracking-info-section');
-        const hireDateCont = modal.querySelector('#hire-date-container');
-        const rejectConts = modal.querySelectorAll('.reject-data-container');
-
-        if (trackingSec) trackingSec.style.display = 'none';
-
-        // Hire Date
-        const hDate = getVal(c, 'Hire_Date');
-        if (hDate && hireDateCont) {
-            if (trackingSec) trackingSec.style.display = 'flex';
-            hireDateCont.style.display = 'block';
-            modal.querySelector('#detail-hire-date').value = formatDateForInput(hDate);
-        } else if (hireDateCont) {
-            hireDateCont.style.display = 'none';
-        }
-
-        // Rejection
-        const rSource = getVal(c, 'Rejection_Source');
-        const rType = getVal(c, 'Rejection_Type');
-        const rReason = getVal(c, 'Rejection_Reason');
-
-        const sourceSelector = modal.querySelector('#detail-rejection-source');
-        if (sourceSelector) {
-            sourceSelector.value = rSource || '';
-            populateRejectionType(rSource || '', rType || '');
-        }
-
-        if ((rSource || rType || rReason) && rejectConts.length) {
-            if (trackingSec) trackingSec.style.display = 'flex';
-            rejectConts.forEach(el => el.style.display = 'block');
-            modal.querySelector('#detail-rejection-source').value = rSource || '';
-            modal.querySelector('#detail-rejection-type').value = rType || '';
-            modal.querySelector('#detail-rejection-reason').value = rReason || '';
-        } else if (rejectConts.length) {
-            rejectConts.forEach(el => el.style.display = 'none');
-        }
-        // ----------------------------------
-
-
-        // Notes - Separate History & New Input
-        if (notesHistoryDiv) notesHistoryDiv.innerText = getVal(c, 'Notes');
-
-        // CV Link
-        const cvLink = modal.querySelector('#detail-cv-link');
-        const viewCvBtn = modal.querySelector('#btn-view-cv-detail');
-        if (cvLink) {
-            cvLink.value = c.CV_Link || '';
-        }
-
+        // RESTORE VIEW CV BUTTON
+        const viewCvBtn = document.getElementById('btn-view-cv-detail');
         if (viewCvBtn) {
-            viewCvBtn.onclick = function () {
-                const link = cvLink.value;
-                if (link) viewCandidateCV(link);
-                else Swal.fire('Thông báo', 'Chưa có link CV', 'info');
+            viewCvBtn.onclick = () => {
+                const link = document.getElementById('detail-cv-link').value;
+                if (link) window.open(link, '_blank');
+                else Swal.fire('Thông báo', 'Chưa có link CV để xem.', 'info');
+            };
+        }
+
+        // CV FILE UPLOAD FEEDBACK
+        const fileInput = document.getElementById('detail-cv-file');
+        if (fileInput) {
+            fileInput.onchange = (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    const fileName = e.target.files[0].name;
+                    const linkInput = document.getElementById('detail-cv-link');
+                    if (linkInput) {
+                        linkInput.value = "[File sẵn sàng: " + fileName + "]";
+                        linkInput.classList.add('text-success', 'fw-bold');
+                    }
+                }
             };
         }
 
         new bootstrap.Modal(modal).show();
-
-        // SHOW/HIDE REQUEST EVALUATION BUTTON
-        if (reqEvalBtn) {
-            if (currentUser && (currentUser.role === 'Admin' || currentUser.role === 'Recruiter' || currentUser.role === 'Manager')) {
-                reqEvalBtn.style.display = 'inline-block';
-                reqEvalBtn.onclick = () => {
-                    const bootstrapModal = bootstrap.Modal.getInstance(modal);
-                    if (bootstrapModal) bootstrapModal.hide();
-                    openCreateEvaluationModal(id);
-                };
-            } else {
-                reqEvalBtn.style.display = 'none';
-            }
-        }
-
-        // NEW: VIEW PDF BUTTON IN CANDIDATE DETAIL
-        // We need to check if an evaluation exists for this candidate
-        const existingEval = window.currentEvaluationList ? window.currentEvaluationList.find(e => e.Candidate_ID == id || e.Candidate_Name == getVal(c, 'Name')) : null;
-
-        // Find or create View PDF Button in the modal footer/button area
-        let viewPdfBtnDetail = modal.querySelector('#btn-view-eval-pdf-detail');
-        if (!viewPdfBtnDetail && reqEvalBtn) {
-            viewPdfBtnDetail = document.createElement('button');
-            viewPdfBtnDetail.id = 'btn-view-eval-pdf-detail';
-            viewPdfBtnDetail.type = 'button';
-            viewPdfBtnDetail.className = 'btn btn-success me-2';
-            viewPdfBtnDetail.innerHTML = '<i class="fas fa-file-pdf"></i> Xem PDF PV';
-            reqEvalBtn.parentNode.insertBefore(viewPdfBtnDetail, reqEvalBtn.nextSibling);
-        }
-
-        if (viewPdfBtnDetail) {
-            if (existingEval && (currentUser.role === 'Admin' || currentUser.role === 'Recruiter' || currentUser.role === 'Manager')) {
-                viewPdfBtnDetail.style.display = 'inline-block';
-                viewPdfBtnDetail.onclick = () => {
-                    exportEvaluationPDF(existingEval.ID);
-                };
-            } else {
-                viewPdfBtnDetail.style.display = 'none';
-            }
-        }
-
-        // RBAC Check
-        const inputs = modal.querySelectorAll('input, select, textarea, button.btn-outline-primary');
-        if (currentUser && currentUser.role === 'Viewer') {
-            if (saveBtn) saveBtn.style.display = 'none';
-            inputs.forEach(el => {
-                if (!el.classList.contains('btn-secondary') && !el.getAttribute('data-bs-dismiss')) {
-                    el.disabled = true;
-                }
-            });
-            inputs.forEach(el => el.disabled = false);
-        }
-
-        // --- NEW: Add dynamic visibility for rejection fields ---
-        const statusDropdown = modal.querySelector('#detail-status');
-        const rejectionTypeCont = modal.querySelector('#rejection-type-container');
-        const rejectionReasonCont = modal.querySelector('#rejection-reason-container');
-
-        const toggleRejectionFields = () => {
-            const val = statusDropdown.value.toLowerCase();
-            const isRejected = val.includes('loại') || val.includes('reject') || val.includes('từ chối');
-            const isHired = val.includes('hired') || val.includes('tuyển') || val.includes('nhận việc') || val.includes('official');
-
-            const fields = modal.querySelectorAll('.rejection-tracking-field');
-            fields.forEach(f => f.style.display = isRejected ? 'block' : 'none');
-
-            // Also handle hire date visibility
-            const hireDateCont = modal.querySelector('.hire-tracking-field');
-            if (hireDateCont) hireDateCont.style.display = isHired ? 'block' : 'none';
-        };
-
-        const sourceDropdown = modal.querySelector('#detail-rejection-source');
-        if (sourceDropdown) {
-            sourceDropdown.onchange = function () {
-                populateRejectionType(this.value);
-            };
-        }
-
-        statusDropdown.onchange = toggleRejectionFields;
-        toggleRejectionFields(); // Initial check
     }
 
     // FUNCTION TO POPULATE REJECTION TYPE BY SOURCE
@@ -1192,9 +1187,6 @@
             else if (lowAction.includes('ghi chú')) { icon = 'fas fa-sticky-note'; color = 'text-secondary'; bgColor = 'bg-secondary-subtle'; }
             else if (lowAction.includes('cập nhật')) { icon = 'fas fa-edit'; color = 'text-primary'; }
 
-            // Simple markdown-ish bold support for details
-            let detailsHtml = (log.details || '').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
             html += `
                 <li class="list-group-item d-flex align-items-start border-0 border-bottom py-3">
                     <div class="me-3 mt-1 ${color} p-2 rounded-circle ${bgColor}" style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
@@ -1202,11 +1194,11 @@
                     </div>
                     <div class="flex-grow-1">
                         <div class="d-flex justify-content-between">
-                            <strong class="text-primary">${log.user}</strong>
-                            <small class="text-muted" style="font-size: 0.7rem;">${timeStr}</small>
+                            <strong>${log.user}</strong>
+                            <small class="text-muted" style="font-size: 0.8rem;">${timeStr}</small>
                         </div>
-                        <div class="text-dark mt-1" style="font-size: 0.9rem; line-height: 1.4;">${detailsHtml}</div>
-                        ${log.action ? `<small class="text-muted fst-italic" style="font-size: 0.75rem;">Action: ${log.action}</small>` : ''}
+                        <div class="text-dark mt-1">${log.details}</div>
+                        ${log.action ? `<small class="text-muted fst-italic">${log.action}</small>` : ''}
                     </div>
                 </li>
             `;
@@ -1652,9 +1644,11 @@
 
         const title = form.querySelector('[name="title"]').value;
         const department = form.querySelector('[name="department"]').value;
+        const position = form.querySelector('[name="position"]').value; // Added
         const location = form.querySelector('[name="location"]').value;
         const type = form.querySelector('[name="type"]').value;
         const description = form.querySelector('[name="description"]').value;
+        const ticketId = form.querySelector('[name="ticketId"]').value; // Added
 
         if (!title) {
             Swal.fire('Lỗi', 'Vui lòng nhập tiêu đề', 'warning');
@@ -1665,9 +1659,11 @@
             id: editingId, // for update
             title: title,
             department: department,
+            position: position,
             location: location,
             type: type,
-            description: description
+            description: description,
+            ticketId: ticketId
         };
 
         const btn = document.querySelector('#addJobModal .btn-primary-custom');
@@ -1820,40 +1816,7 @@
     });
 
     // 8. SETTINGS MANAGEMENT
-    function switchSettingsTab(tabId, element) {
-        // Hide all tab panes in Settings section
-        const panes = document.querySelectorAll('#settings .tab-pane');
-        panes.forEach(p => {
-            p.classList.remove('show', 'active');
-            p.style.display = 'none'; // Force hide to be sure
-        });
-
-        // Show target pane
-        const targetPane = document.getElementById(tabId);
-        if (targetPane) {
-            targetPane.classList.add('show', 'active');
-            targetPane.style.display = 'block'; // Force show
-        }
-
-        // Update active state in sidebar
-        if (element) {
-            document.querySelectorAll('.settings-sidebar .nav-link').forEach(l => {
-                l.classList.remove('active');
-            });
-            element.classList.add('active');
-        }
-    }
     function loadSettings() {
-        // Reset to first tab by default to avoid overlapping when re-entering settings
-        const firstTab = document.querySelector('.settings-sidebar .nav-link.active');
-        if (firstTab) {
-            // Already active, but let's ensure content matches
-            switchSettingsTab('tab-departments', firstTab);
-        } else {
-            const defaultTab = document.querySelector('[onclick*="tab-departments"]');
-            if (defaultTab) switchSettingsTab('tab-departments', defaultTab);
-        }
-
         google.script.run.withSuccessHandler(function (data) {
             usersData = data.users || [];
             stagesData = data.stages || [];
@@ -1895,9 +1858,6 @@
 
         document.getElementById('template-editor-title').innerText = 'Đang sửa: ' + t.Name;
         document.getElementById('email-template-form').style.display = 'block';
-        document.getElementById('email-editor-placeholder').style.display = 'none';
-        document.getElementById('email-editor-container').style.display = 'block';
-
         document.getElementById('tpl-id').value = t.ID;
         document.getElementById('tpl-name').value = t.Name;
         document.getElementById('tpl-subject').value = t.Subject;
@@ -1907,9 +1867,6 @@
     function addEmailTemplate() {
         document.getElementById('template-editor-title').innerText = 'Thêm Mẫu Mới';
         document.getElementById('email-template-form').style.display = 'block';
-        document.getElementById('email-editor-placeholder').style.display = 'none';
-        document.getElementById('email-editor-container').style.display = 'block';
-
         document.getElementById('tpl-id').value = '';
         document.getElementById('tpl-name').value = '';
         document.getElementById('tpl-subject').value = '';
@@ -1919,7 +1876,7 @@
         document.querySelectorAll('#email-template-list a').forEach(a => a.classList.remove('active'));
     }
 
-    function deleteCurrentTemplate() {
+    function deleteEmailTemplate() {
         const id = document.getElementById('tpl-id').value;
         if (!id) {
             // If creating new, just hide form
@@ -1948,16 +1905,6 @@
                 }).apiDeleteEmailTemplate(id);
             }
         });
-    }
-
-    function promptAddEmailTemplate() {
-        document.getElementById('tpl-id').value = '';
-        document.getElementById('tpl-name').value = '';
-        document.getElementById('tpl-subject').value = '';
-        document.getElementById('tpl-body').value = '';
-        document.getElementById('template-editor-title').innerText = 'Thêm mẫu mới';
-        document.getElementById('email-editor-placeholder').style.display = 'none';
-        document.getElementById('email-editor-container').style.display = 'block';
     }
 
     function saveEmailTemplate() {
@@ -1997,15 +1944,6 @@
 
     function renderSettings(data) {
         renderCompanyInfo(data.companyInfo);
-
-        // Render Email Settings
-        if (data.companyInfo) {
-            const senderNameEl = document.querySelector('[name="email_sender_name"]');
-            const signatureEl = document.querySelector('[name="email_signature"]');
-            if (senderNameEl) senderNameEl.value = data.companyInfo.email_sender_name || '';
-            if (signatureEl) signatureEl.value = data.companyInfo.email_signature || '';
-        }
-
         // Users Table
         const userTbody = document.querySelector('#users-table tbody');
         if (userTbody) {
@@ -2014,32 +1952,20 @@
             const users = usersData.length ? usersData : (data.users || []);
 
             users.forEach(u => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                <td class="fw-bold">${u.Username}</td>
-                <td>${u.Full_Name || ''}</td>
-                <td>${u.Email || ''}</td>
-                <td>${u.Phone || ''}</td>
-                <td><span class="badge ${u.Role === 'Admin' ? 'bg-primary' : 'bg-secondary'} px-2 py-1">${u.Role}</span></td>
-                <td><span class="text-muted small">${u.Department || ''}</span></td>
-                <td class="text-end">
-                     <button class="btn btn-sm btn-outline-primary me-1 border-0" onclick="openUserModal('${u.Username}')" title="Sửa"><i class="fas fa-edit"></i></button>
-                     <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteUser('${u.Username}')" title="Xóa"><i class="fas fa-trash"></i></button>
-                </td>
-            `;
-                userTbody.appendChild(tr);
-            });
-        }
-
-        // Stages List
-        const stagesContainer = document.getElementById('stages-config-list');
-        if (stagesContainer) {
-            stagesContainer.innerHTML = '';
-            // If specific data passed, use it, else use global stagesData
-            const list = (data.stages && data.stages.length > 0) ? data.stages : stagesData;
-
-            list.sort((a, b) => a.Order - b.Order).forEach(s => {
-                addStageConfigRow(s.Stage_Name, s.Color);
+                userTbody.innerHTML += `
+                    <tr>
+                        <td>${u.Username}</td>
+                        <td>${u.Full_Name || ''}</td>
+                        <td>${u.Email || ''}</td>
+                        <td>${u.Phone || ''}</td>
+                        <td><span class="badge bg-secondary">${u.Role}</span></td>
+                        <td>${u.Department || ''}</td>
+                        <td>
+                             <button class="btn btn-sm btn-outline-primary me-1" onclick="openUserModal('${u.Username}')">Sửa</button>
+                             <button class="btn btn-sm btn-outline-danger" onclick="deleteUser('${u.Username}')">Xóa</button>
+                        </td>
+                    </tr>
+                `;
             });
         }
 
@@ -2048,37 +1974,10 @@
             renderRejectionReasons(window.rejectionReasonsData || []);
         }
 
-        // Render Departments & Recruiters
-        renderDepartments();
-        renderRecruiters();
-    }
-
-    function saveEmailSettings() {
-        const form = document.getElementById('email-config-form');
-        if (!form) return;
-
-        const senderName = form.querySelector('[name="email_sender_name"]').value.trim();
-        const signature = form.querySelector('[name="email_signature"]').value.trim();
-
-        const data = {
-            email_sender_name: senderName,
-            email_signature: signature
-        };
-
-        const btn = form.querySelector('button[onclick="saveEmailSettings()"]');
-        const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Đang lưu...';
-        btn.disabled = true;
-
-        google.script.run.withSuccessHandler(function (res) {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-            if (res.success) {
-                Swal.fire('Thành công', 'Đã lưu cấu hình email', 'success');
-            } else {
-                Swal.fire('Lỗi', res.message, 'error');
-            }
-        }).apiSaveCompanyInfo(data);
+        // Rejection Reasons
+        if (typeof renderRejectionReasons === 'function') {
+            renderRejectionReasons(window.rejectionReasonsData || []);
+        }
     }
 
     function renderCompanyInfo(info) {
@@ -2198,66 +2097,6 @@
         }).apiSaveCompanyInfo(info);
     }
 
-    function addStageConfigRow(name = '', color = '#0d6efd') {
-        const container = document.getElementById('stages-config-list');
-        const count = container.children.length + 1;
-        const div = document.createElement('div');
-        div.className = 'd-flex align-items-center mb-2 p-2 border rounded stage-row';
-        div.innerHTML = `
-            <span class="me-3 fw-bold handle"><i class="fas fa-grip-lines text-muted"></i></span>
-            <input type="text" class="form-control me-2" placeholder="Tên bước (Ví dụ: Phỏng vấn)" value="${name}">
-            <input type="color" class="form-control form-control-color me-2" value="${color}">
-            <button class="btn btn-sm btn-outline-danger" onclick="this.parentElement.remove()"><i class="fas fa-trash"></i></button>
-        `;
-        container.appendChild(div);
-
-        // Init sortable if needed (optional)
-    }
-
-    function saveStagesConfig() {
-        const rows = document.querySelectorAll('.stage-row');
-        const newStages = [];
-
-        rows.forEach((row, index) => {
-            const inputs = row.querySelectorAll('input');
-            const name = inputs[0].value.trim();
-            if (name) {
-                newStages.push({
-                    ID: 'S' + new Date().getTime() + index, // Simple ID gen
-                    Stage_Name: name,
-                    Order: index + 1,
-                    Color: inputs[1].value
-                });
-            }
-        });
-
-        if (newStages.length === 0) {
-            Swal.fire('Lỗi', 'Cần ít nhất 1 bước trong quy trình', 'error');
-            return;
-        }
-
-        const btn = document.querySelector('#tab-stages .btn-primary');
-        const originalText = btn.innerText;
-        btn.innerText = 'Đang lưu...';
-        btn.disabled = true;
-
-        google.script.run.withSuccessHandler(function (res) {
-            btn.innerText = originalText;
-            btn.disabled = false;
-
-            if (res.success) {
-                Swal.fire('Thành công', 'Đã lưu cấu hình quy trình', 'success');
-                stagesData = newStages; // Update local
-                refreshAllDropdowns();  // NEW - refresh status dropdowns everywhere
-                // Refresh Kanban & Settings UI
-                renderKanbanBoard();
-                // Re-render settings to show saved state
-                renderSettings({ users: [], stages: newStages }); // Hacky partial update or reload all
-            } else {
-                Swal.fire('Lỗi', res.message, 'error');
-            }
-        }).apiSaveStages(newStages);
-    }
 
     function renderRejectionReasons(reasons) {
         const companyList = document.getElementById('rejection-company-list');
@@ -2612,51 +2451,50 @@
         container.innerHTML = '';
 
         departmentsData.forEach(dept => {
-            const div = document.createElement('div');
-            div.className = 'col-lg-4 col-md-6 mb-4';
+            const card = document.createElement('div');
+            card.className = 'col-md-4';
 
             const positionsList = dept.positions.map(pos => `
-            <div class="d-flex justify-content-between align-items-center py-2 border-bottom last-child-border-0">
-                <span class="text-dark small"><i class="fas fa-circle me-2 text-primary" style="font-size: 0.4rem;"></i>${pos}</span>
-                <div class="btn-group btn-group-sm">
-                    <button class="btn btn-link text-muted p-0 me-2" onclick="promptEditPosition('${dept.name}', '${pos}')" title="Sửa Vị trí">
-                        <i class="fas fa-edit"></i>
-                    </button>
-                    <button class="btn btn-link text-danger p-0" onclick="deletePosition('${dept.name}', '${pos}')" title="Xóa Vị trí">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            </div>
-        `).join('');
-
-            div.innerHTML = `
-            <div class="card h-100 border shadow-none hover-shadow-sm transition-all" style="border-radius: 12px;">
-                <div class="card-header bg-white border-0 pt-3 pb-0 d-flex justify-content-between align-items-center">
-                    <h6 class="mb-0 fw-bold text-primary"><i class="fas fa-folder me-2"></i>${dept.name}</h6>
-                    <div class="dropdown">
-                        <button class="btn btn-link text-muted p-0" data-bs-toggle="dropdown">
-                            <i class="fas fa-ellipsis-v"></i>
+                <li class="list-group-item d-flex justify-content-between align-items-center py-2">
+                    <span>${pos}</span>
+                    <div>
+                        <button class="btn btn-sm btn-outline-secondary me-1" onclick="promptEditPosition('${dept.name}', '${pos}')" title="Sửa">
+                            <i class="fas fa-edit" style="font-size: 0.7rem;"></i>
                         </button>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><a class="dropdown-item" href="#" onclick="promptEditDepartment('${dept.name}')"><i class="fas fa-edit me-2"></i>Sửa tên</a></li>
-                            <li><a class="dropdown-item text-danger" href="#" onclick="deleteDepartment('${dept.name}')"><i class="fas fa-trash me-2"></i>Xóa phòng</a></li>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deletePosition('${dept.name}', '${pos}')" title="Xóa">
+                            <i class="fas fa-trash" style="font-size: 0.7rem;"></i>
+                        </button>
+                    </div>
+                </li>
+            `).join('');
+
+            card.innerHTML = `
+                <div class="card h-100">
+                    <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0">${dept.name}</h6>
+                        <div>
+                            <button class="btn btn-sm btn-outline-light me-1" onclick="promptEditDepartment('${dept.name}')" title="Sửa">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-light" onclick="deleteDepartment('${dept.name}')" title="Xóa">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <ul class="list-group list-group-flush">
+                            ${positionsList || '<li class="list-group-item text-muted">Chưa có vị trí</li>'}
                         </ul>
                     </div>
-                </div>
-                <div class="card-body">
-                    <div class="vstack gap-1">
-                        ${positionsList || '<div class="text-muted small italic">Chưa có vị trí</div>'}
+                    <div class="card-footer bg-white">
+                        <button class="btn btn-sm btn-outline-primary w-100" onclick="promptAddPosition('${dept.name}')">
+                            <i class="fas fa-plus"></i> Thêm vị trí
+                        </button>
                     </div>
                 </div>
-                <div class="card-footer bg-transparent border-0 pt-0 pb-3">
-                    <button class="btn btn-sm btn-outline-primary w-100" style="border-style: dashed;" onclick="promptAddPosition('${dept.name}')">
-                        <i class="fas fa-plus me-1"></i> Thêm vị trí mới
-                    </button>
-                </div>
-            </div>
-        `;
+            `;
 
-            container.appendChild(div);
+            container.appendChild(card);
         });
     }
 
@@ -3200,7 +3038,6 @@
                     populateAddPositionDropdown();
                 }
             }
-            populateAddStatusDropdown(currentStatus);  // NEW - refresh status dropdown
         }
     }
 
@@ -3209,18 +3046,37 @@
         const statusDropdown = document.getElementById('detail-status');
         if (!statusDropdown) return;
 
+        const ticketId = document.getElementById('detail-ticket-id')?.value;
+        let customStages = null;
+
+        if (ticketId && ticketsData && projectsData) {
+            const ticket = ticketsData.find(t => String(t['Mã Ticket']) === String(ticketId));
+            if (ticket) {
+                const project = projectsData.find(p => p['Mã Dự án'] === ticket['Mã Dự án']);
+                if (project && project['Quy trình (Workflow)']) {
+                    customStages = project['Quy trình (Workflow)'].split(',').map(s => s.trim());
+                }
+            }
+        }
+
         statusDropdown.innerHTML = '<option value="">Chọn giai đoạn</option>';
 
-        if (stagesData && stagesData.length > 0) {
+        if (customStages && customStages.length > 0) {
+            customStages.forEach(stageName => {
+                const option = document.createElement('option');
+                option.value = stageName;
+                option.textContent = stageName;
+                if (stageName === selectedStatus) option.selected = true;
+                statusDropdown.appendChild(option);
+            });
+        } else if (stagesData && stagesData.length > 0) {
             // Sort by order
             const sorted = [...stagesData].sort((a, b) => (a.Order || 0) - (b.Order || 0));
             sorted.forEach(stage => {
                 const option = document.createElement('option');
                 option.value = stage.Stage_Name;
                 option.textContent = stage.Stage_Name;
-                if (stage.Stage_Name === selectedStatus) {
-                    option.selected = true;
-                }
+                if (stage.Stage_Name === selectedStatus) option.selected = true;
                 statusDropdown.appendChild(option);
             });
         } else {
@@ -3230,59 +3086,18 @@
                 const option = document.createElement('option');
                 option.value = stageName;
                 option.textContent = stageName;
-                if (stageName === selectedStatus) {
-                    option.selected = true;
-                }
+                if (stageName === selectedStatus) option.selected = true;
                 statusDropdown.appendChild(option);
             });
         }
     }
 
     // POPULATE STATUS DROPDOWN (Add Candidate Modal)
-    function populateAddStatusDropdown(selectedStatus) {
-        const statusDropdown = document.getElementById('add-status');
-        if (!statusDropdown) return;
 
-        statusDropdown.innerHTML = '<option value="">Chọn giai đoạn</option>';
-
-        if (stagesData && stagesData.length > 0) {
-            // Sort by order
-            const sorted = [...stagesData].sort((a, b) => (a.Order || 0) - (b.Order || 0));
-            sorted.forEach(stage => {
-                const option = document.createElement('option');
-                option.value = stage.Stage_Name;
-                option.textContent = stage.Stage_Name;
-                if (stage.Stage_Name === selectedStatus) {
-                    option.selected = true;
-                }
-                statusDropdown.appendChild(option);
-            });
-        } else {
-            // Fallback to default stages
-            const defaultStages = ['Apply', 'Call Interview', 'Interview', 'Offer'];
-            defaultStages.forEach(stageName => {
-                const option = document.createElement('option');
-                option.value = stageName;
-                option.textContent = stageName;
-                if (stageName === selectedStatus) {
-                    option.selected = true;
-                }
-                statusDropdown.appendChild(option);
-            });
-        }
-    }
-
-    // Tab listeners for Settings
+    // Load departments when Settings tab is shown
     document.addEventListener('shown.bs.tab', function (e) {
-        const href = e.target.getAttribute('href');
-        if (href === '#tab-departments') {
+        if (e.target.getAttribute('href') === '#tab-departments') {
             loadDepartments();
-        } else if (href === '#tab-recruiters') {
-            // Recruiters are loaded via loadDashboardData or specific call
-            // Since they are in recruitersData, we just render
-            renderRecruiters();
-        } else if (href === '#tab-email-templates') {
-            loadEmailTemplates();
         }
     });
 
@@ -3369,7 +3184,7 @@
         tbody.innerHTML = '';
 
         if (recruitersData.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center">Chưa có dữ liệu</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center">Chưa có dữ liệu</td></tr>';
             return;
         }
 
@@ -3377,18 +3192,20 @@
             const tr = document.createElement('tr');
             // ID fallback if old data
             const displayId = r.id || '';
+            const displayJoinDate = r.joinDate ? new Date(r.joinDate).toLocaleDateString('vi-VN') : '';
 
             tr.innerHTML = `
-                <td class="fw-bold text-dark">${r.name}</td>
-                <td><small>${r.email || ''}</small></td>
-                <td>${r.phone || ''}</td>
+                <td>${displayId}</td>
+                <td>${r.name}</td>
+                <td>${r.email || ''}</td>
                 <td>${r.position || ''}</td>
-                <td><span class="badge bg-light text-dark border">${r.role || 'User'}</span></td>
-                <td class="text-end">
-                    <button class="btn btn-sm btn-outline-primary me-1" onclick="openRecruiterModal('${r.id}')" title="Sửa">
+                <td>${displayJoinDate}</td>
+                <td class="text-center"><span class="badge bg-info text-white">${r.totalCandidates || 0}</span></td>
+                <td class="text-center">
+                    <button class="btn btn-sm btn-primary me-1" onclick="openRecruiterModal('${r.id}')" title="Sửa">
                         <i class="fas fa-edit"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteRecruiter('${r.id}')" title="Xóa">
+                    <button class="btn btn-sm btn-danger" onclick="deleteRecruiter('${r.id}')" title="Xóa">
                         <i class="fas fa-trash"></i>
                     </button>
                 </td>
@@ -3409,21 +3226,18 @@
 
         if (id && id !== 'undefined' && id !== 'null') {
             // EDIT MODE
-            document.getElementById('recruiterModalLabel').innerText = 'Cập nhật Chuyên viên Tuyển dụng';
+            document.getElementById('recruiterModalLabel').innerText = 'Cập nhật Người phụ trách';
             const rec = recruitersData.find(r => String(r.id) === String(id));
             if (rec) {
                 document.getElementById('rec-id').value = rec.id || '';
                 document.getElementById('rec-name').value = rec.name;
                 document.getElementById('rec-email').value = rec.email || '';
-                document.getElementById('rec-phone').value = rec.phone || '';
                 document.getElementById('rec-position').value = rec.position || '';
-                document.getElementById('rec-role').value = rec.role || 'User';
-                // Note: JoinDate is stored but not currently edited in this simple modal
+                document.getElementById('rec-joinDate').value = rec.joinDate || '';
             }
         } else {
             // ADD MODE
-            document.getElementById('recruiterModalLabel').innerText = 'Thêm Chuyên viên Tuyển dụng mới';
-            document.getElementById('rec-role').value = 'User';
+            document.getElementById('recruiterModalLabel').innerText = 'Thêm Người phụ trách';
             document.getElementById('rec-joinDate').value = new Date().toISOString().slice(0, 10);
         }
 
@@ -3452,10 +3266,8 @@
             id: id,
             name: name,
             email: email,
-            phone: document.getElementById('rec-phone').value.trim(),
             position: position,
-            role: document.getElementById('rec-role').value,
-            joinDate: id ? (recruitersData.find(r => r.id == id)?.joinDate || new Date().toISOString().slice(0, 10)) : new Date().toISOString().slice(0, 10)
+            joinDate: joinDate
         };
 
         const handler = function (res) {
@@ -3483,115 +3295,6 @@
     }
 
     // UPDATED: Delete Recruiter
-    /**
- * SYSTEM MAINTENANCE
- */
-    function runSystemBackup() {
-        Swal.fire({
-            title: 'Xác nhận sao lưu?',
-            text: "Hệ thống sẽ tạo một bản sao lưu toàn bộ dữ liệu hiện tại trước khi thực hiện các thay đổi lớn.",
-            icon: 'info',
-            showCancelButton: true,
-            confirmButtonColor: '#10B981',
-            cancelButtonColor: '#3085d6',
-            confirmButtonText: 'Bắt đầu sao lưu',
-            cancelButtonText: 'Để sau'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang tạo bản sao lưu...',
-                    html: 'Vui lòng không đóng trình duyệt.',
-                    allowOutsideClick: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-
-                google.script.run.withSuccessHandler(function (res) {
-                    if (res.success) {
-                        Swal.fire({
-                            title: 'Thành công!',
-                            html: `Đã sao lưu dữ liệu an toàn.<br><br><a href="${res.url}" target="_blank" class="btn btn-sm btn-link">Xem tệp sao lưu</a>`,
-                            icon: 'success'
-                        });
-                    } else {
-                        Swal.fire('Lỗi', res.message, 'error');
-                    }
-                }).apiCreateBackup();
-            }
-        });
-    }
-
-    function runSheetMigration() {
-        Swal.fire({
-            title: 'Xác nhận hợp nhất Sheet?',
-            text: "Hành động này sẽ gom các Sheet nhỏ lẻ vào các Sheet đa nhiệm để tối ưu hệ thống. Vui lòng SAO LƯU DỮ LIỆU trước khi thực hiện!",
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#10B981',
-            cancelButtonColor: '#d33',
-            confirmButtonText: 'Đồng ý hợp nhất',
-            cancelButtonText: 'Hủy'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang hợp nhất dữ liệu...',
-                    html: 'Hệ thống đang sắp xếp lại các ngăn chứa dữ liệu. Vui lòng đợi.',
-                    allowOutsideClick: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-
-                google.script.run.withSuccessHandler(function (res) {
-                    if (res.success) {
-                        Swal.fire({
-                            title: 'Thành công!',
-                            text: res.message,
-                            icon: 'success'
-                        }).then(() => {
-                            window.location.reload(); // Reload to apply new sheet paths
-                        });
-                    } else {
-                        Swal.fire('Lỗi', res.message, 'error');
-                    }
-                }).apiMigrateToConsolidatedSheets();
-            }
-        });
-    }
-
-    function runDatabaseCleanup() {
-        Swal.fire({
-            title: 'Xác nhận dọn dẹp?',
-            text: "Toàn bộ lịch sử hoạt động cũ sẽ bị xóa để tối ưu tốc độ. Hành động này không thể hoàn tác!",
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#d33',
-            cancelButtonColor: '#3085d6',
-            confirmButtonText: 'Đồng ý xóa',
-            cancelButtonText: 'Hủy'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang tối ưu...',
-                    allowOutsideClick: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-
-                google.script.run.withSuccessHandler(function (res) {
-                    if (res.success) {
-                        Swal.fire('Thành công', res.message, 'success');
-                        if (typeof loadActivityLogs === 'function') loadActivityLogs();
-                    } else {
-                        Swal.fire('Lỗi', res.message, 'error');
-                    }
-                }).apiCleanupActivityLog();
-            }
-        });
-    }
-
     function deleteRecruiter(id) {
         if (!confirm('Bạn có chắc muốn xóa người nảy?')) return;
         google.script.run.withSuccessHandler(function (res) {
@@ -3603,140 +3306,55 @@
         }).apiDeleteRecruiter(id);
     }
 
-    // Updated populateFilterDropdowns to support advanced filters
+    // Updated populateFilterDropdowns to use recruitersData
     function populateFilterDropdowns() {
-        console.log('🔄 Populating advanced filter dropdowns...');
-
-        // 1. PROJECT FILTERS
-        const projectFilters = ['report-filter-project', 'filter-candidate-project', 'kanban-filter-project'];
-        projectFilters.forEach(id => {
-            const select = document.getElementById(id);
-            if (!select) return;
-            const currentVal = select.value;
-            select.innerHTML = id.includes('report') ? '<option value="">-- Tất cả Dự án --</option>' : '<option value="">-- Dự án --</option>';
-            projectsData.forEach(p => {
-                const opt = document.createElement('option');
-                opt.value = p['Mã Dự án'];
-                opt.textContent = p['Tên Dự án'];
-                if (p['Mã Dự án'] === currentVal) opt.selected = true;
-                select.appendChild(opt);
+        // Populate department filter
+        const deptFilter = document.getElementById('filter-department');
+        if (deptFilter && departmentsData.length > 0) {
+            deptFilter.innerHTML = '<option value="">Tất cả phòng ban</option>';
+            const uniqueDepts = [...new Set(departmentsData.map(d => d.name))];
+            uniqueDepts.forEach(dept => {
+                const option = document.createElement('option');
+                option.value = dept;
+                option.textContent = dept;
+                if (kanbanFilters.department === dept) option.selected = true;
+                deptFilter.appendChild(option);
             });
-        });
+        }
 
-        // 2. DEPARTMENT FILTERS
-        const deptFilters = ['filter-candidate-dept', 'kanban-filter-dept'];
-        deptFilters.forEach(id => {
-            const select = document.getElementById(id);
-            if (!select) return;
-            const currentVal = select.value;
-            select.innerHTML = '<option value="">-- Phòng ban --</option>';
-            if (departmentsData.length > 0) {
-                const uniqueDepts = [...new Set(departmentsData.map(d => d.name))];
-                uniqueDepts.forEach(dept => {
-                    const opt = document.createElement('option');
-                    opt.value = opt.textContent = dept;
-                    if (dept === currentVal) opt.selected = true;
-                    select.appendChild(opt);
-                });
-            }
-        });
-
-        // 3. POSITION FILTERS (Global positions)
-        const posFilters = ['filter-candidate-pos', 'kanban-filter-pos'];
-        posFilters.forEach(id => {
-            const select = document.getElementById(id);
-            if (!select) return;
-            const currentVal = select.value;
-            select.innerHTML = '<option value="">-- Vị trí --</option>';
+        // Populate position filter (all positions from all departments)
+        const posFilter = document.getElementById('filter-position');
+        if (posFilter && departmentsData.length > 0) {
+            posFilter.innerHTML = '<option value="">Tất cả vị trí</option>';
             const allPositions = [];
             departmentsData.forEach(dept => {
-                if (dept.positions) {
-                    dept.positions.forEach(pos => {
-                        if (!allPositions.includes(pos)) allPositions.push(pos);
-                    });
-                }
+                dept.positions.forEach(pos => {
+                    if (!allPositions.includes(pos)) {
+                        allPositions.push(pos);
+                    }
+                });
             });
             allPositions.forEach(pos => {
-                const opt = document.createElement('option');
-                opt.value = opt.textContent = pos;
-                if (pos === currentVal) opt.selected = true;
-                select.appendChild(opt);
+                const option = document.createElement('option');
+                option.value = pos;
+                option.textContent = pos;
+                if (kanbanFilters.position === pos) option.selected = true;
+                posFilter.appendChild(option);
             });
-        });
+        }
 
-        // 4. STAGE FILTERS
-        const stageFilters = ['filter-candidate-stage'];
-        stageFilters.forEach(id => {
-            const select = document.getElementById(id);
-            if (!select) return;
-            const currentVal = select.value;
-            select.innerHTML = '<option value="">-- Giai đoạn --</option>';
-            if (stagesData.length > 0) {
-                const sortedStages = [...stagesData].sort((a, b) => a.Order - b.Order);
-                sortedStages.forEach(s => {
-                    const opt = document.createElement('option');
-                    opt.value = opt.textContent = s.Stage_Name;
-                    if (s.Stage_Name === currentVal) opt.selected = true;
-                    select.appendChild(opt);
-                });
-            }
-        });
-
-        // 5. STATUS FILTERS (Can be same as stages or specific values)
-        const statusFilters = ['filter-candidate-status'];
-        statusFilters.forEach(id => {
-            const select = document.getElementById(id);
-            if (!select) return;
-            const currentVal = select.value;
-            select.innerHTML = '<option value="">-- Trạng thái --</option>';
-            const statuses = ['Mới', 'Đang xử lý', 'Đạt yêu cầu', 'Loại', 'Đã nhận việc']; // Example status list
-            statuses.forEach(st => {
-                const opt = document.createElement('option');
-                opt.value = opt.textContent = st;
-                if (st === currentVal) opt.selected = true;
-                select.appendChild(opt);
-            });
-        });
-
-        // 6. LEGACY/BACKUP (Keep for compatibility)
+        // Populate recruiter filter (from recruitersData)
         const recruiterFilter = document.getElementById('filter-recruiter');
         if (recruiterFilter && recruitersData.length > 0) {
             recruiterFilter.innerHTML = '<option value="">Người phụ trách</option>';
             recruitersData.forEach(r => {
                 const option = document.createElement('option');
-                option.value = option.textContent = r.name;
+                option.value = r.name;
+                option.textContent = r.name;
+                if (kanbanFilters.recruiter === r.name) option.selected = true;
                 recruiterFilter.appendChild(option);
             });
         }
-    }
-
-    // New: Dynamic Ticket Loader for Filters
-    function updateTicketFilter(projectSelectId, targetSelectId) {
-        const projectVal = document.getElementById(projectSelectId)?.value || '';
-        const select = document.getElementById(targetSelectId);
-        if (!select) return;
-
-        select.innerHTML = '<option value="">-- Tất cả Ticket --</option>';
-        if (!projectVal) return;
-
-        const filteredTickets = ticketsData.filter(t => t['Mã Dự án'] === projectVal);
-        filteredTickets.forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t['Mã Ticket'];
-            opt.textContent = `[${t['Mã Ticket']}] ${t['Vị trí cần tuyển'] || t['Vị trí'] || ''}`;
-            select.appendChild(opt);
-        });
-    }
-
-    function onCandidateProjectChange() {
-        updateTicketFilter('filter-candidate-project', 'filter-candidate-ticket');
-        renderCandidatesTable();
-    }
-
-    function onKanbanProjectChange() {
-        const project = document.getElementById('kanban-filter-project').value;
-        updateTicketFilter(project, 'kanban-filter-ticket');
-        renderKanbanBoard();
     }
 
     // Helper to populate recruiter dropdown in Modals
@@ -3786,12 +3404,6 @@
         // 2. Refresh Sources
         populateCandidateSources();
 
-        // 3. Refresh Add Candidate Modal Dropdowns
-        const addModal = document.getElementById('addCandidateModal');
-        if (addModal && addModal.classList.contains('show')) {
-            const currentRecruiter = document.getElementById('add-recruiter')?.value;
-            populateRecruiterSelect('add-recruiter', currentRecruiter);
-        }
 
         // 4. Refresh Detail Modal Dropdowns
         const detailModal = document.getElementById('candidateDetailModal');
@@ -4697,52 +4309,8 @@
     }
 
     // Populate position dropdown for Add Candidate modal
-    function populateAddPositionDropdown() {
-        const deptDropdown = document.getElementById('add-department');
-        const posDropdown = document.getElementById('add-position');
-
-        if (!deptDropdown || !posDropdown) return;
-
-        const selectedDept = deptDropdown.value;
-        posDropdown.innerHTML = '<option value="">Chọn vị trí</option>';
-
-        if (!selectedDept) return;
-
-        const dept = departmentsData.find(d => d.name === selectedDept);
-        if (dept && dept.positions) {
-            dept.positions.forEach(pos => {
-                const option = document.createElement('option');
-                option.value = pos;
-                option.textContent = pos;
-                posDropdown.appendChild(option);
-            });
-        }
-    }
 
     // Open Add Candidate modal and populate department dropdown
-    function prepareAddCandidateModal() {
-        populateDepartmentDropdown(null, function () {
-            // Populate for add modal
-            const addDeptDropdown = document.getElementById('add-department');
-            if (addDeptDropdown && departmentsData.length > 0) {
-                addDeptDropdown.innerHTML = '<option value="">Chọn phòng ban</option>';
-                departmentsData.forEach(dept => {
-                    const option = document.createElement('option');
-                    option.value = dept.name;
-                    option.textContent = dept.name;
-                    addDeptDropdown.appendChild(option);
-                });
-            }
-        });
-        // Populate status dropdown
-        populateAddStatusDropdown('Apply');  // Default to Apply for new candidates
-        // Populate recruiter dropdown
-        populateRecruiterSelect('add-recruiter');
-        // Clear form
-        document.getElementById('add-candidate-form').reset();
-        const dupContainer = document.getElementById('duplicate-warning-container');
-        if (dupContainer) dupContainer.style.display = 'none';
-    }
 
     // Initialize filters when Kanban section loads
     document.addEventListener('DOMContentLoaded', function () {
@@ -6093,7 +5661,7 @@
         candidateSourcesData.forEach(source => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-            <td>${source}</td>
+            < td > ${source}</td >
                 <td class="text-center">
                     <button class="btn btn-sm btn-primary me-1" onclick="editCandidateSource('${source}')" title="Sửa">
                         <i class="fas fa-edit"></i>
@@ -6104,34 +5672,6 @@
                 </td>
         `;
             tbody.appendChild(tr);
-        });
-    }
-
-    function promptAddCandidateSource() {
-        Swal.fire({
-            title: 'Thêm nguồn mới',
-            input: 'text',
-            inputPlaceholder: 'Nhập tên nguồn (Ví dụ: LinkedIn)',
-            showCancelButton: true,
-            confirmButtonText: 'Thêm',
-            cancelButtonText: 'Hủy',
-            inputValidator: (value) => {
-                if (!value) {
-                    return 'Vui lòng nhập tên nguồn!';
-                }
-            }
-        }).then((result) => {
-            if (result.isConfirmed && result.value) {
-                const name = result.value.trim();
-                google.script.run.withSuccessHandler(function (res) {
-                    if (res.success) {
-                        Swal.fire('Thành công', 'Đã thêm nguồn mới', 'success');
-                        loadCandidateSources();
-                    } else {
-                        Swal.fire('Lỗi', res.message, 'error');
-                    }
-                }).apiAddCandidateSource(name);
-            }
         });
     }
 
@@ -6292,20 +5832,20 @@
             if (n.Type === 'Email') icon = 'fa-envelope text-info';
 
             const li = document.createElement('li');
-            li.className = `p-2 border-bottom notification-item ${bgClass}`;
+            li.className = `p - 2 border - bottom notification - item ${bgClass} `;
             li.style.cursor = 'pointer';
             li.onclick = () => handleNotificationClick(n);
 
             li.innerHTML = `
-            <div class="d-flex align-items-start">
-                <div class="me-2 mt-1"><i class="fas ${icon}" style="width: 20px; text-align: center;"></i></div>
-                <div class="flex-grow-1">
-                    <div class="small ${textClass}" style="line-height: 1.2;">${n.Message}</div>
-                    <div class="text-muted" style="font-size: 0.7rem; margin-top: 2px;">${time}</div>
-                </div>
-                ${!isRead ? '<span class="badge bg-danger rounded-pill ms-1" style="font-size: 0.5rem;">New</span>' : ''}
-            </div>
-        `;
+            < div class="d-flex align-items-start" >
+                    <div class="me-2 mt-1"><i class="fas ${icon}" style="width: 20px; text-align: center;"></i></div>
+                    <div class="flex-grow-1">
+                        <div class="small ${textClass}" style="line-height: 1.2;">${n.Message}</div>
+                        <div class="text-muted" style="font-size: 0.7rem; margin-top: 2px;">${time}</div>
+                    </div>
+                    ${!isRead ? '<span class="badge bg-danger rounded-pill ms-1" style="font-size: 0.5rem;">New</span>' : ''}
+                </div >
+            `;
             list.appendChild(li);
         });
 
@@ -6756,95 +6296,11 @@
         return dateStr;
     }
 
-    // SYSTEM MAINTENANCE UTILITIES
-    function runSystemBackup() {
-        Swal.fire({
-            title: 'Sao lưu hệ thống?',
-            text: "Một bản sao của toàn bộ tệp Spreadsheet sẽ được tạo trong Google Drive của bạn.",
-            icon: 'info',
-            showCancelButton: true,
-            confirmButtonText: 'Bắt đầu sao lưu',
-            cancelButtonText: 'Hủy'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang sao lưu...',
-                    allowOutsideClick: false,
-                    didOpen: () => { Swal.showLoading(); }
-                });
-
-                google.script.run.withSuccessHandler(function (res) {
-                    Swal.close();
-                    if (res.success) {
-                        Swal.fire({
-                            title: 'Thành công!',
-                            text: res.message,
-                            icon: 'success',
-                            footer: `<a href="${res.url}" target="_blank">Xem file sao lưu</a>`
-                        });
-                    } else {
-                        Swal.fire('Lỗi', res.message, 'error');
-                    }
-                }).apiCreateBackup();
-            }
-        });
-    }
-
-    function runSheetMigration() {
-        Swal.fire({
-            title: 'Hợp nhất & Tối ưu Sheet?',
-            html: `
-                <div class="text-start">
-                    <p class="text-danger fw-bold"><i class="fas fa-exclamation-triangle"></i> CẢNH BÁO: Hành động này không thể hoàn tác!</p>
-                    <p>Hệ thống sẽ thực hiện:</p>
-                    <ul>
-                        <li>Tạo cấu trúc các sheet mới (SYS_SETTINGS, CORE_RECRUITMENT, etc.)</li>
-                        <li>Chuyển dữ liệu từ các sheet cũ vào cấu trúc mới.</li>
-                        <li>Tối ưu hóa dữ liệu để tăng tốc độ phản hồi.</li>
-                    </ul>
-                    <p class="small text-muted italic">Vui lòng đảm bảo đã "Sao lưu hệ thống" trước khi thực hiện bước này.</p>
-                </div>
-            `,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonText: 'Xác nhận di trú dữ liệu',
-            cancelButtonText: 'Hủy'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang di trú dữ liệu...',
-                    html: 'Vui lòng không đóng trình duyệt. Quá trình này có thể mất vài phút...',
-                    allowOutsideClick: false,
-                    didOpen: () => { Swal.showLoading(); }
-                });
-
-                google.script.run.withSuccessHandler(function (res) {
-                    Swal.close();
-                    if (res.success) {
-                        Swal.fire({
-                            title: 'Hoàn tất di trú!',
-                            text: res.message,
-                            icon: 'success'
-                        }).then(() => {
-                            location.reload();
-                        });
-                    } else {
-                        Swal.fire({
-                            title: 'Cảnh báo/Lỗi',
-                            text: res.message,
-                            icon: 'warning'
-                        });
-                    }
-                }).runSheetMigration();
-            }
-        });
-    }
-
     // DATABASE CLEANUP UTILITY
     function runDatabaseCleanup() {
         Swal.fire({
             title: 'Xác nhận dọn dẹp?',
-            text: "Hệ thống sẽ dọn dẹp các dòng log cũ và tối ưu hóa bảng ACTIVITY_LOGS.",
+            text: "Hệ thống sẽ hợp nhất các cột trùng lặp và xóa các cột dư thừa trong Google Sheet. Bạn nên sao lưu file trước khi thực hiện.",
             icon: 'warning',
             showCancelButton: true,
             confirmButtonColor: '#d33',
@@ -6853,62 +6309,427 @@
             cancelButtonText: 'Hủy'
         }).then((result) => {
             if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang dọn dẹp...',
-                    allowOutsideClick: false,
-                    didOpen: () => { Swal.showLoading(); }
-                });
+                const loader = document.getElementById('cleanup-loader');
+                const btn = event.currentTarget;
+                if (loader) loader.style.display = 'block';
+                if (btn) btn.disabled = true;
 
                 google.script.run.withSuccessHandler(function (res) {
+                    if (loader) loader.style.display = 'none';
+                    if (btn) btn.disabled = false;
+
                     if (res.success) {
-                        Swal.fire('Thành công!', res.message, 'success');
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Thành công!',
+                            text: res.message + (res.details ? '\nDanh sách đã xóa: ' + res.details : ''),
+                        }).then(() => {
+                            // Reload everything to get fresh headers
+                            location.reload();
+                        });
                     } else {
                         Swal.fire('Kết quả', res.message, 'info');
                     }
-                }).apiCleanupActivityLogs();
+                }).withFailureHandler(function (err) {
+                    if (loader) loader.style.display = 'none';
+                    if (btn) btn.disabled = false;
+                    Swal.fire('Lỗi Server', err.toString(), 'error');
+                }).apiCleanupCandidateSheet();
             }
         });
     }
 
-    /**
-     * SYSTEM MAINTENANCE: Reset Database
-     */
-    function runResetDatabase() {
+    // ============================================
+    // AI CV PARSER LOGIC (GEMINI)
+    // ============================================
+    async function handleAIParsing() {
+        const fileInput = document.getElementById('detail-cv-file');
+        if (fileInput.files.length === 0) {
+            Swal.fire('Thông báo', 'Vui lòng chọn file CV (PDF) trước khi dùng AI. Bạn có thể nhấn nút "Upload" để chọn file PDF trước.', 'warning');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        if (file.type !== 'application/pdf') {
+            Swal.fire('Lỗi', 'Tính năng AI hiện chỉ hỗ trợ mạnh nhất cho file định dạng PDF thông qua OCR.', 'error');
+            return;
+        }
+
+        // Hiển thị trạng thái loading
+        document.getElementById('ai-loading').style.display = 'block';
+        document.getElementById('btn-ai-parse').disabled = true;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+            const base64Data = e.target.result.split(',')[1];
+            const fileData = {
+                base64: base64Data,
+                type: file.type,
+                name: file.name
+            };
+
+            // Gọi lên Backend
+            google.script.run
+                .withSuccessHandler(function (response) {
+                    document.getElementById('ai-loading').style.display = 'none';
+                    document.getElementById('btn-ai-parse').disabled = false;
+
+                    if (response.error) {
+                        Swal.fire('Lỗi AI', response.error, 'error');
+                    } else {
+                        fillCandidateForm(response);
+                        Swal.fire('Thành công', 'AI đã trích xuất dữ liệu xong! Vui lòng kiểm tra lại các thông tin trước khi lưu.', 'success');
+                    }
+                })
+                .withFailureHandler(function (err) {
+                    document.getElementById('ai-loading').style.display = 'none';
+                    document.getElementById('btn-ai-parse').disabled = false;
+                    Swal.fire('Lỗi hệ thống', 'Không thể kết nối với dịch vụ AI: ' + err.toString(), 'error');
+                })
+                .apiParseCV(fileData);
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function fillCandidateForm(data) {
+        if (data.Name) document.getElementById('detail-name').value = data.Name;
+        if (data.Phone) document.getElementById('detail-phone').value = data.Phone;
+        if (data.Email) document.getElementById('detail-email').value = data.Email;
+        if (data.Birth_Year) document.getElementById('detail-dob').value = data.Birth_Year;
+
+        if (data.Experience) document.getElementById('detail-experience').value = data.Experience;
+        if (data.School) document.getElementById('detail-school').value = data.School;
+        if (data.Major) document.getElementById('detail-major').value = data.Major;
+
+        // Handle Position (Select dropdown)
+        if (data.Position) {
+            const posSelect = document.getElementById('detail-position');
+            if (posSelect) {
+                for (let i = 0; i < posSelect.options.length; i++) {
+                    if (posSelect.options[i].text.toLowerCase().includes(data.Position.toLowerCase())) {
+                        posSelect.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // AI MATCHING
+    function resetAiMatchUI() {
+        const bar = document.getElementById('ai-score-bar');
+        if (bar) {
+            bar.style.width = '0%';
+            bar.innerText = '0%';
+            bar.classList.remove('bg-info', 'bg-success', 'bg-warning', 'bg-danger');
+            document.getElementById('ai-score-text').innerText = '0%';
+            document.getElementById('ai-pros').innerHTML = '';
+            document.getElementById('ai-cons').innerHTML = '';
+            document.getElementById('ai-summary').innerText = 'Chưa có dữ liệu phân tích.';
+        }
+    }
+
+    function startAiMatching() {
+        const candidateId = document.getElementById('current-candidate-id').value;
+        const ticketId = document.getElementById('detail-ticket-id').value;
+
+        if (!candidateId) return;
+        if (!ticketId) {
+            Swal.fire('Chú ý', 'Cần gắn ứng viên vào một Ticket (Yêu cầu tuyển dụng) để so sánh JD.', 'info');
+            return;
+        }
+
+        const bar = document.getElementById('ai-score-bar');
+        const text = document.getElementById('ai-score-text');
+
+        // Show loading state in the bar
+        bar.style.width = '100%';
+        bar.innerText = 'Đang phân tích...';
+        bar.classList.add('bg-info');
+
+        google.script.run
+            .withSuccessHandler(function (res) {
+                if (res.success) {
+                    const data = res.analysis;
+                    bar.style.width = data.score + '%';
+                    bar.innerText = data.score + '%';
+                    bar.classList.remove('bg-info', 'bg-success', 'bg-warning', 'bg-danger');
+                    bar.classList.add(data.score >= 75 ? 'bg-success' : (data.score >= 50 ? 'bg-warning' : 'bg-danger'));
+                    text.innerText = data.score + '%';
+
+                    document.getElementById('ai-pros').innerHTML = (data.pros || []).map(i => `<li>${i}</li>`).join('');
+                    document.getElementById('ai-cons').innerHTML = (data.cons || []).map(i => `<li>${i}</li>`).join('');
+                    document.getElementById('ai-summary').innerText = "Kết luận: " + (data.summary || "N/A");
+                } else {
+                    bar.style.width = '0%';
+                    bar.innerText = 'Lỗi';
+                    Swal.fire('Lỗi AI', res.message, 'error');
+                }
+            })
+            .withFailureHandler(err => {
+                bar.style.width = '0%';
+                Swal.fire('Lỗi hệ thống', err.toString(), 'error');
+            })
+            .apiAnalyzeCandidateMatching(candidateId, ticketId);
+    }
+
+    // AI JD GENERATION
+    function handleGenerateJD() {
+        const title = document.getElementById('job-title').value;
+        const currentDesc = document.getElementById('job-description').value;
+
+        if (!title) {
+            Swal.fire('Thông báo', 'Vui lòng nhập Tiêu đề công việc trước.', 'warning');
+            return;
+        }
+
+        // Use a more robust SweetAlert config for input fields inside modals
         Swal.fire({
-            title: 'CẢNH BÁO NGUY HIỂM!',
-            text: "Hành động này sẽ XÓA TOÀN BỘ dữ liệu hiện tại và xây dựng lại hệ thống Database mới theo cấu trúc chuẩn. Bạn có chắc chắn muốn tiếp tục? (Toàn bộ dữ liệu cũ sẽ mất vĩnh viễn!)",
-            icon: 'warning',
+            title: 'AI Soạn JD',
+            text: 'Dựa trên tiêu đề "' + title + '", AI sẽ soạn thảo bản mô tả chi tiết. Bạn có muốn bổ sung yêu cầu gì không?',
+            input: 'text',
+            inputPlaceholder: 'VD: Cần 2 năm kinh nghiệm, biết tiếng Anh...',
             showCancelButton: true,
-            confirmButtonColor: '#d33',
-            cancelButtonColor: '#3085d6',
-            confirmButtonText: 'Có, Xóa & Tái cấu trúc ngay!',
-            cancelButtonText: 'Hủy'
+            confirmButtonText: 'Soạn thảo ngay',
+            showLoaderOnConfirm: true,
+            backdrop: false, // Prevent backdrop issues
+            target: document.getElementById('addJobModal'), // Render inside the modal
+            preConfirm: (req) => {
+                return new Promise((resolve, reject) => {
+                    google.script.run
+                        .withSuccessHandler(res => {
+                            if (res && res.success && res.jd) {
+                                // Strip Markdown (bold **, headers ##)
+                                res.jd = res.jd.replace(/\*\*/g, '').replace(/###/g, '').replace(/##/g, '').replace(/#/g, '');
+                                resolve(res);
+                            } else {
+                                resolve(res);
+                            }
+                        })
+                        .withFailureHandler(err => reject(err))
+                        .apiGenerateJD(title, req || currentDesc);
+                });
+            },
+            allowOutsideClick: () => !Swal.isLoading()
         }).then((result) => {
             if (result.isConfirmed) {
-                Swal.fire({
-                    title: 'Đang tái cấu trúc...',
-                    text: 'Hệ thống đang xóa dữ liệu cũ và tạo bảng mới, vui lòng không tắt trình duyệt...',
-                    allowOutsideClick: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-
-                google.script.run
-                    .withSuccessHandler(function (res) {
-                        Swal.fire({
-                            title: 'Thành công!',
-                            text: res.message,
-                            icon: 'success'
-                        }).then(() => {
-                            window.location.reload();
-                        });
-                    })
-                    .withFailureHandler(function (err) {
-                        Swal.fire('Lỗi nghiêm trọng!', err.toString(), 'error');
-                    })
-                    .apiInitializeDatabase();
+                if (result.value && result.value.success) {
+                    document.getElementById('job-description').value = result.value.jd;
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Hoàn tất',
+                        text: 'Bản JD đã được AI soạn thảo!',
+                        target: document.getElementById('addJobModal')
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Lỗi',
+                        text: result.value ? result.value.message : 'Lỗi không xác định',
+                        target: document.getElementById('addJobModal')
+                    });
+                }
             }
         });
     }
+
+    // ============================================
+    // CALENDAR INTERVIEW LOGIC
+    // ============================================
+    function handleCreateSchedule() {
+        const scheduleData = {
+            candidateName: document.getElementById('detail-name').value,
+            candidateEmail: document.getElementById('detail-email').value,
+            managerEmail: document.getElementById('interview-manager-email').value,
+            startTime: document.getElementById('interview-start').value,
+            endTime: document.getElementById('interview-end').value,
+            location: "Vòng 1 - Văn phòng bTaskee",
+            note: "Phỏng vấn chuyên môn vòng 1"
+        };
+
+        if (!scheduleData.startTime || !scheduleData.endTime || !scheduleData.managerEmail) {
+            Swal.fire('Chú ý', 'Vui lòng chọn đầy đủ thời gian và nhập Email Manager', 'warning');
+            return;
+        }
+
+        Swal.fire({
+            title: 'Đang đặt lịch...',
+            text: 'Vui lòng chờ trong giây lát',
+            allowOutsideClick: false,
+            didOpen: () => { Swal.showLoading(); }
+        });
+
+        google.script.run
+            .withSuccessHandler(function (res) {
+                if (res.success) {
+                    Swal.fire('Thành công', res.message || 'Lịch hẹn đã được tạo và gửi email mời họp!', 'success');
+                } else {
+                    Swal.fire('Lỗi', res.message, 'error');
+                }
+            })
+            .withFailureHandler(function (err) {
+                Swal.fire('Lỗi hệ thống', err.toString(), 'error');
+            })
+            .apiCreateInterviewSchedule(scheduleData);
+    }
+    // Helper to render notes as bubbles
+    function renderNoteHistory(notesText, container) {
+        if (!container) return;
+        if (!notesText) {
+            container.innerHTML = '<div class="text-center text-muted py-3">Chưa có lịch sử ghi chú.</div>';
+            return;
+        }
+
+        const lines = notesText.split('\n');
+        let html = '';
+
+        lines.forEach(line => {
+            if (!line.trim()) return;
+
+            // Format: [HH:mm dd/MM/yyyy] User: Content
+            const match = line.match(/^\[(.*?)\] (.*?): (.*)$/);
+            if (match) {
+                const [_, time, user, content] = match;
+                const isCurrentUser = (currentUser && (user === currentUser.username || user === currentUser.name));
+
+                html += `
+                    <div class="note-bubble ${isCurrentUser ? 'note-bubble-admin' : ''}">
+                        <div class="note-header">
+                            <span class="note-user">${user}</span>
+                            <span class="note-time">${time}</span>
+                        </div>
+                        <div class="note-content">${content}</div>
+                    </div>
+                `;
+            } else {
+                // Fallback for legacy or unstructured notes
+                html += `
+                    <div class="note-bubble">
+                        <div class="note-content">${line}</div>
+                    </div>
+                `;
+            }
+        });
+
+        container.innerHTML = html;
+        // Scroll to bottom
+        container.scrollTop = container.scrollHeight;
+    }
+    // Aliases for compatibility with different button clicks
+    function saveCandidate() { saveCandidateDetail(); }
+
+    function openSendEmail() {
+        const id = document.getElementById('current-candidate-id').value;
+        if (id) openSendEmailModal(id);
+    }
+
+    // EXPORT CANDIDATE PROFILE PDF
+    function exportCandidateToPDF() {
+        const id = document.getElementById('current-candidate-id').value;
+        if (!id) return;
+
+        Swal.fire({
+            title: 'Đang chuẩn bị...',
+            text: 'Hệ thống đang trích xuất dữ liệu và tạo PDF',
+            allowOutsideClick: false,
+            didOpen: () => { Swal.showLoading(); }
+        });
+
+        google.script.run
+            .withSuccessHandler(function (res) {
+                if (res.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Đã tạo xong!',
+                        text: 'File của bạn đang được tải xuống...',
+                        timer: 2000,
+                        showConfirmButton: false
+                    });
+
+                    if (res.url) {
+                        window.open(res.url, '_blank');
+                    }
+                } else {
+                    Swal.fire('Lỗi', res.message, 'error');
+                }
+            })
+            .withFailureHandler(function (err) {
+                Swal.fire('Lỗi hệ thống', err.message, 'error');
+            })
+            .apiGenerateDocument(id, 'TemplateCandidateProfile', {});
+    }
+
+    // DOCUMENT HUB LOGIC
+    function openDocumentHub(candidateId = null) {
+        if (!candidateId) {
+            candidateId = document.getElementById('current-candidate-id').value;
+        }
+        if (!candidateId) return;
+
+        const modal = document.getElementById('documentHubModal');
+        // Pre-fill hidden or data attribute if needed
+        modal.setAttribute('data-candidate-id', candidateId);
+
+        // Reset sub-fields in Hub Modal
+        const salaryField = document.getElementById('doc-salary');
+        if (salaryField) {
+            const c = candidatesData.find(x => x.ID == candidateId);
+            if (c) salaryField.value = c.Salary_Expectation || '';
+        }
+
+        new bootstrap.Modal(modal).show();
+    }
+
+    function generateDocument() {
+        const modal = document.getElementById('documentHubModal');
+        const candidateId = modal.getAttribute('data-candidate-id');
+        const template = document.getElementById('doc-template-select').value;
+
+        if (!candidateId || !template) {
+            Swal.fire('Lỗi', 'Thông tin không hợp lệ', 'warning');
+            return;
+        }
+
+        const extraData = {
+            docNumber: document.getElementById('doc-number-override')?.value,
+            salary: document.getElementById('doc-salary')?.value,
+            salaryWords: document.getElementById('doc-salary-words')?.value,
+            startDate: document.getElementById('doc-start-date')?.value,
+            probationEnd: document.getElementById('doc-probation-end')?.value,
+            deadline: document.getElementById('doc-deadline')?.value,
+            contractPeriod: document.getElementById('doc-contract-period')?.value,
+            location: document.getElementById('doc-location-select')?.value,
+            signer: document.getElementById('doc-signer-select')?.value,
+            manager: document.getElementById('doc-manager')?.value
+        };
+
+        const btn = document.getElementById('btn-generate-doc');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Đang tạo...';
+        btn.disabled = true;
+
+        google.script.run
+            .withSuccessHandler(function (res) {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                if (res.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Tạo văn bản thành công',
+                        text: 'Bấm OK để xem file PDF',
+                    }).then(() => {
+                        window.open(res.url, '_blank');
+                    });
+                } else {
+                    Swal.fire('Lỗi', res.message, 'error');
+                }
+            })
+            .withFailureHandler(function (err) {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                Swal.fire('Lỗi hệ thống', err.message, 'error');
+            })
+            .apiGenerateDocument(candidateId, template, extraData);
+    }
+
 </script>
