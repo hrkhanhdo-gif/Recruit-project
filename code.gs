@@ -214,8 +214,6 @@ function apiAnalyzeCandidateMatching(candidateId, ticketId) {
             },
             required: ["score", "pros", "cons", "summary"]
         }
-    });
-    });
 
     return { success: true, analysis: analysis };
   } catch (e) {
