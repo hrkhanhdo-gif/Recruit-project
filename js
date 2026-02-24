@@ -18,6 +18,16 @@
     let rejectionChartInstance = null;
     let timeToHireChartInstance = null;
 
+    // GLOBAL UTILITIES
+    const norm = s => (s || '').toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ').trim();
+
+    const isRejStatus = c => {
+        const s = norm(getVal(c, 'Stage') || getVal(c, 'Status'));
+        return s.includes('tu choi') || s.includes('reject') || s.includes('loai') || s.includes('khong phu hop');
+    };
+
     function formatDateForInput(dStr) {
         if (!dStr) return '';
         const d = new Date(dStr);
@@ -66,12 +76,10 @@
         }
     }
 
-    // 0. INITIALIZATION
+    // 1. INITIALIZATION & UTILITIES
+    // -------------------------------------------------------------------------
     document.addEventListener('DOMContentLoaded', function () {
-        // PERMANENT LOGIN BYPASS REMOVED
         checkSession();
-
-        // Initialize Chatbot logic
         const chatCircle = document.getElementById('chat-circle');
         if (chatCircle) chatCircle.onclick = toggleChat;
     });
@@ -284,7 +292,7 @@
         }
     });
 
-    // 1. SIMPLE NAVIGATION
+    // 2. SIMPLE NAVIGATION
     function showSection(sectionId, element) {
         // Consolidated RBAC Check
         const adminOnlySections = ['settings', 'jobs'];
@@ -333,7 +341,7 @@
         }
     }
 
-    // 2. LOGIN LOGIC
+    // 3. LOGIN LOGIC
     function handleLogin() {
         let u = document.getElementById('login-username').value;
         let p = document.getElementById('login-password').value;
@@ -421,7 +429,7 @@
         }
     }
 
-    // 3. LOAD DATA
+    // 4. LOAD & UPDATE DATA
     function loadDashboardData() {
         console.log('🔄 loadDashboardData() called');
         google.script.run.withSuccessHandler(function (data) {
@@ -452,6 +460,8 @@
             populateFilterDropdowns();
             renderKanbanBoard();
             renderCandidatesTable();
+            populateCandidateFilters();
+            populateKanbanFilters();
             if (typeof renderRecruiters === 'function') renderRecruiters();
 
             // Check for evaluations (if Manager)
@@ -525,39 +535,404 @@
     }
 
     function updateDashboardStats() {
-        document.getElementById('stat-total-candidates').innerText = candidatesData.length;
+        // 1. Get Filter Values
+        const fProj = document.getElementById('filter-dash-project')?.value || '';
+        const fTicket = document.getElementById('filter-dash-ticket')?.value || '';
+        const fDept = document.getElementById('filter-dash-dept')?.value || '';
+        const fPos = document.getElementById('filter-dash-pos')?.value || '';
+        const fRecruiter = document.getElementById('filter-dash-recruiter')?.value || '';
+        const fStart = document.getElementById('filter-dash-start')?.value || '';
+        const fEnd = document.getElementById('filter-dash-end')?.value || '';
 
-        // Calculate stats based on Status/Stage
-        const hiredCount = candidatesData.filter(c => c.Status === 'Offer' || c.Status === 'Hired').length;
-        const interviewCount = candidatesData.filter(c => c.Status === 'Interview' || c.Status === 'Phỏng vấn').length;
-        const rejectedCount = candidatesData.filter(c => c.Status === 'Rejected' || c.Status === 'Loại').length;
+        // 2. Filter Global Candidates Data
+        let filtered = candidatesData;
 
-        document.getElementById('stat-hired').innerText = hiredCount;
-        document.getElementById('stat-interviewing').innerText = interviewCount;
-        document.getElementById('stat-rejected').innerText = rejectedCount;
+        if (fProj) {
+            filtered = filtered.filter(c => {
+                const tID = getVal(c, 'TicketID');
+                const t = ticketsData.find(x => x['Mã Ticket'] == tID);
+                return t && t['Mã Dự án'] === fProj;
+            });
+        }
+        if (fTicket) filtered = filtered.filter(c => getVal(c, 'TicketID') === fTicket);
+        if (fDept) filtered = filtered.filter(c => getVal(c, 'Department') === fDept);
+        if (fPos) filtered = filtered.filter(c => getVal(c, 'Position') === fPos);
+        if (fRecruiter) filtered = filtered.filter(c => getVal(c, 'Recruiter') === fRecruiter);
 
-        // Update Chart if exists
+        if (fStart) {
+            const startDate = new Date(fStart);
+            filtered = filtered.filter(c => new Date(getVal(c, 'Applied_Date')) >= startDate);
+        }
+        if (fEnd) {
+            const endDate = new Date(fEnd);
+            endDate.setHours(23, 59, 59, 999);
+            filtered = filtered.filter(c => new Date(getVal(c, 'Applied_Date')) <= endDate);
+        }
+
+        // Save filtered data for chart rendering
+        window._dashboardData = filtered;
+
+        // 3. Update Basic Stats
+        document.getElementById('stat-total-candidates').innerText = filtered.length; // Will be overridden by renderFunnelChart with v1
+
+        const counts = { ut: 0, sv: 0, pv: 0, mnv: 0, pd: 0, dnv: 0, rej: 0 };
+        filtered.forEach(c => {
+            const s = norm(getVal(c, 'Stage') || getVal(c, 'Status'));
+            if (isRejStatus(c)) {
+                counts.rej++;
+            } else {
+                if (s.includes('nhan viec') && !s.includes('moi') && !s.includes('phe duyet')) counts.dnv++;
+                else if (s.includes('phe duyet')) counts.pd++;
+                else if (s.includes('moi nhan viec')) counts.mnv++;
+                else if (s.includes('phong van')) counts.pv++;
+                else if (s.includes('so van')) counts.sv++;
+                else counts.ut++;
+            }
+        });
+
+        document.getElementById('stat-hired').innerText = counts.dnv;
+        document.getElementById('stat-interviewing').innerText = counts.sv + counts.pv;
+        document.getElementById('stat-rejected').innerText = counts.rej;
+
+        // 4. Render Charts
+        renderFunnelChart();
         updateCharts();
+
+        // 5. Advanced Reports (API call)
+        // We might want to pass filters to API if we want deep consistency, 
+        // but for now let's just use local data for charts where possible.
+        google.script.run.withSuccessHandler(function (data) {
+            if (data.success) {
+                renderAdvancedReports(data);
+            }
+        }).apiGetAdvancedReports();
+    }
+
+    function applyDashboardFilters() {
+        console.log('🔍 Applying Dashboard Filters...');
+        updateDashboardStats();
+    }
+
+    function resetDashboardFilters() {
+        const ids = ['filter-dash-project', 'filter-dash-ticket', 'filter-dash-dept', 'filter-dash-pos', 'filter-dash-recruiter', 'filter-dash-start', 'filter-dash-end'];
+        ids.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        const dp = document.getElementById('filter-dash-pos');
+        if (dp) dp.innerHTML = '<option value="">Vị trí</option>';
+        applyDashboardFilters();
+    }
+
+    function onDashDeptChange() {
+        const dept = document.getElementById('filter-dash-dept').value;
+        populatePositionDropdown('', 'filter-dash-pos');
+        applyDashboardFilters();
+    }
+
+    function renderAdvancedReports(data) {
+        // 1. Overview & Costs
+        const ov = data.overview;
+        if (ov) {
+            document.getElementById('dashboard-total-cost').innerText = ov.totalCost.toLocaleString('vi-VN') + ' đ';
+            document.getElementById('stat-cost-per-hire').innerText = ov.costPerHire.toLocaleString('vi-VN') + ' đ';
+            document.getElementById('stat-approved-tickets').innerText = ov.activeTickets;
+
+            // Completion rate calculation (Global)
+            const totalTarget = data.projectStats.reduce((sum, p) => sum + p.target, 0);
+            const totalHired = data.projectStats.reduce((sum, p) => sum + p.hired, 0);
+            const globalCompRate = totalTarget > 0 ? Math.round((totalHired / totalTarget) * 100) : 0;
+            document.getElementById('main-completion-rate').innerText = globalCompRate + '%';
+
+            // Top Conversion Rate
+            const convElem = document.getElementById('stat-conversion-rate-top');
+            if (convElem && data.funnelData) {
+                convElem.innerText = Math.round(data.funnelData.conversionRate) + '%';
+            }
+
+            // Budget Progress (Example: assume 1B budget for demo or calculate from Project total)
+            const totalProjectBudget = projectsData.reduce((sum, p) => sum + (parseFloat(p['Ngân sách']) || 0), 0);
+            const budgetPercent = totalProjectBudget > 0 ? (ov.totalCost / totalProjectBudget) * 100 : 0;
+            const pb = document.getElementById('budget-progress-bar');
+            if (pb) {
+                pb.style.width = Math.min(budgetPercent, 100) + '%';
+                pb.classList.remove('bg-success', 'bg-warning', 'bg-danger');
+                if (budgetPercent > 90) pb.classList.add('bg-danger');
+                else if (budgetPercent > 70) pb.classList.add('bg-warning');
+                else pb.classList.add('bg-success');
+            }
+        }
+
+        // 2. Recruiter Leaderboard
+        const rbBody = document.querySelector('#recruiter-leaderboard tbody');
+        if (rbBody && data.recruiterStats) {
+            rbBody.innerHTML = data.recruiterStats.map(r => `
+                <tr>
+                    <td>
+                        <div class="d-flex align-items-center">
+                            <div class="avatar-sm bg-primary-light text-primary rounded-circle me-2 d-flex align-items-center justify-content-center fw-bold" style="width:32px; height:32px; font-size:12px;">
+                                ${r.name.substring(0, 2).toUpperCase()}
+                            </div>
+                            <span class="fw-medium">${r.name}</span>
+                        </div>
+                    </td>
+                    <td>${r.processed}</td>
+                    <td class="fw-bold">${r.hired}</td>
+                    <td>${Math.round(r.avgDays)} ngày</td>
+                    <td>
+                        <div class="d-flex align-items-center">
+                            <span class="me-2">${Math.round(r.hitRate)}%</span>
+                            <div class="progress flex-grow-1" style="height: 4px; width: 50px;">
+                                <div class="progress-bar" style="width: ${r.hitRate}%"></div>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // 3. Project Performance Table
+        const pTableBody = document.querySelector('#project-performance-table tbody');
+        if (pTableBody && data.projectStats) {
+            pTableBody.innerHTML = data.projectStats.map(p => {
+                const badgeColor = p.status === 'Active' ? 'success' : 'secondary';
+                return `
+                <tr>
+                    <td class="fw-bold">${p.name}</td>
+                    <td><span class="badge bg-${badgeColor}-light text-${badgeColor}">${p.status}</span></td>
+                    <td class="text-center">${p.target}</td>
+                    <td class="text-center">${p.hired}</td>
+                    <td>
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="progress flex-grow-1" style="height: 6px;">
+                                <div class="progress-bar bg-primary" role="progressbar" style="width: ${p.completionRate}%"></div>
+                            </div>
+                            <span class="small fw-bold">${Math.round(p.completionRate)}%</span>
+                        </div>
+                    </td>
+                </tr>
+                `;
+            }).join('');
+        }
+
+        // 4. Charts Update
+        updateAdvancedCharts(data);
+    }
+
+    function renderFunnelChart() {
+        const container = document.getElementById('recruitment-funnel-container');
+        if (!container) return;
+
+        const dataToRender = window._dashboardData || candidatesData;
+
+        // Count stages
+        const counts = { ut: 0, sv: 0, pv: 0, mnv: 0, pd: 0, dnv: 0 };
+        const lost = { ut: 0, sv: 0, pv: 0, mnv: 0, pd: 0 };
+        dataToRender.forEach(item => {
+            const s = norm(getVal(item, 'Stage') || getVal(item, 'Status'));
+            const r = norm(getVal(item, 'Rejection_Stage') || getVal(item, 'RejectionStage'));
+            const isRej = isRejStatus(item);
+            if (!isRej) {
+                if (s.includes('nhan viec') && !s.includes('moi') && !s.includes('phe duyet')) counts.dnv++;
+                else if (s.includes('phe duyet')) counts.pd++;
+                else if (s.includes('moi nhan viec')) counts.mnv++;
+                else if (s.includes('phong van')) counts.pv++;
+                else if (s.includes('so van')) counts.sv++;
+                else counts.ut++;
+            } else {
+                if (r.includes('phe duyet')) lost.pd++;
+                else if (r.includes('moi nhan viec')) lost.mnv++;
+                else if (r.includes('phong van')) lost.pv++;
+                else if (r.includes('so van')) lost.sv++;
+                else lost.ut++;
+            }
+        });
+
+        // Cumulative (bottom-up)
+        const v6 = counts.dnv;
+        const v5 = counts.pd + lost.pd + v6;
+        const v4 = counts.mnv + lost.mnv + v5;
+        const v3 = counts.pv + lost.pv + v4;
+        const v2 = counts.sv + lost.sv + v3;
+        const v1 = Math.max(counts.ut + lost.ut + v2, dataToRender.length);
+
+        const stages = [
+            { label: 'Ứng Tuyển', val: v1, lost: lost.ut, gradStart: '#1dc8a4', gradEnd: '#20c5a0' },
+            { label: 'Sơ Vấn', val: v2, lost: lost.sv, gradStart: '#1bbfa0', gradEnd: '#1ab89a' },
+            { label: 'Phỏng Vấn', val: v3, lost: lost.pv, gradStart: '#15b0a0', gradEnd: '#10a8a8' },
+            { label: 'Mời Nhận Việc', val: v4, lost: lost.mnv, gradStart: '#2a96da', gradEnd: '#2082d0' },
+            { label: 'Phê Duyệt', val: v5, lost: lost.pd, gradStart: '#4070d8', gradEnd: '#5060d8' },
+            { label: 'Đã Nhận Việc', val: v6, lost: 0, gradStart: '#5b4fcf', gradEnd: '#6a41c4' },
+        ];
+
+        // Update stat total
+        const statTotal = document.getElementById('stat-total-candidates');
+        if (statTotal) statTotal.innerText = v1;
+
+        const finalRate = v1 > 0 ? Math.round((v6 / v1) * 100) : 0;
+        const convElem = document.getElementById('stat-conversion-rate-top');
+        if (convElem) convElem.innerText = finalRate + '%';
+
+        // Build SVG funnel
+        const SVG_W = 460;
+        const STAGE_H = 72;
+        const GAP = 4;
+        const MAX_TOP_W = 440;
+        const MIN_BOT_W = 180;
+        const totalH = stages.length * (STAGE_H + GAP);
+
+        const getW = (val) => v1 > 0
+            ? MIN_BOT_W + (MAX_TOP_W - MIN_BOT_W) * (val / v1)
+            : MIN_BOT_W;
+
+        let svgShapes = '';
+        let svgDefs = '';
+        stages.forEach((st, i) => {
+            const wTop = getW(st.val);
+            const wBot = i < stages.length - 1 ? getW(stages[i + 1].val) : MIN_BOT_W - 40;
+            const y = i * (STAGE_H + GAP);
+            const cx = SVG_W / 2;
+            const x1 = cx - wTop / 2;
+            const x2 = cx + wTop / 2;
+            const x3 = cx + wBot / 2;
+            const x4 = cx - wBot / 2;
+            const gid = `fg${i}`;
+            svgDefs += `
+                <linearGradient id="${gid}" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="${st.gradStart}"/>
+                    <stop offset="100%" stop-color="${st.gradEnd}"/>
+                </linearGradient>`;
+            svgShapes += `
+                <polygon points="${x1},${y} ${x2},${y} ${x3},${y + STAGE_H} ${x4},${y + STAGE_H}"
+                    fill="url(#${gid})" rx="6"/>`;
+        });
+
+        const svgMarkup = `
+            <svg viewBox="0 0 ${SVG_W} ${totalH}" width="100%" style="max-width:480px;display:block;margin:auto;">
+                <defs>${svgDefs}</defs>
+                ${svgShapes}
+            </svg>`;
+
+        // Build rows HTML (label + svg + rate)
+        let rowsHtml = '';
+        stages.forEach((st, i) => {
+            const rate = v1 > 0 ? Math.round((st.val / v1) * 100) : 0;
+            const lostHtml = st.lost > 0
+                ? `<div style="color:#ef4444;font-size:0.72rem;font-weight:700;margin-top:2px;">-${st.lost} loại</div>`
+                : '';
+            rowsHtml += `
+                <div style="display:flex;align-items:center;gap:0;margin-bottom:${i < stages.length - 1 ? '4px' : '0'};">
+                    <div style="width:160px;text-align:right;padding-right:18px;flex-shrink:0;">
+                        <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.12em;color:#94a3b8;text-transform:uppercase;">${st.label}</div>
+                        <div style="font-size:1.9rem;font-weight:800;color:#1e293b;line-height:1.1;">${st.val.toLocaleString()}</div>
+                        ${lostHtml}
+                    </div>
+                    <div style="flex:1;height:${STAGE_H + GAP}px;"></div>
+                    <div style="width:120px;padding-left:18px;flex-shrink:0;">
+                        <div style="display:inline-flex;align-items:center;gap:5px;background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:99px;padding:5px 14px;">
+                            <span style="font-size:0.95rem;font-weight:800;color:#059669;">${rate}%</span>
+                            <span style="font-size:0.6rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.08em;">Rate</span>
+                        </div>
+                    </div>
+                </div>`;
+        });
+
+        container.innerHTML = `
+            <div style="position:relative;max-width:700px;margin:0 auto;padding:10px 0;">
+                <div style="display:flex;">
+                    <!-- Labels col -->
+                    <div style="width:160px;flex-shrink:0;">
+                        ${stages.map((st, i) => {
+            const lostHtml = st.lost > 0
+                ? `<div style="color:#ef4444;font-size:0.72rem;font-weight:700;margin-top:1px;">-${st.lost} loại</div>`
+                : '<div style="height:18px;"></div>';
+            return `<div style="height:${STAGE_H + GAP}px;display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding-right:18px;">
+                                <div style="font-size:0.6rem;font-weight:700;letter-spacing:0.12em;color:#94a3b8;text-transform:uppercase;">${st.label}</div>
+                                <div style="font-size:1.8rem;font-weight:900;color:#1e293b;line-height:1;">${st.val.toLocaleString()}</div>
+                                ${lostHtml}
+                            </div>`;
+        }).join('')}
+                    </div>
+                    <!-- SVG funnel col -->
+                    <div style="flex:1;position:relative;">
+                        ${svgMarkup}
+                    </div>
+                    <!-- Rate pills col -->
+                    <div style="width:120px;flex-shrink:0;">
+                        ${stages.map((st, i) => {
+            const rate = v1 > 0 ? Math.round((st.val / v1) * 100) : 0;
+            const isGreen = i < 3;
+            const pillBg = isGreen ? '#f0fdf4' : (i < 5 ? '#eff6ff' : '#f5f3ff');
+            const pillBorder = isGreen ? '#bbf7d0' : (i < 5 ? '#bfdbfe' : '#ddd6fe');
+            const pillColor = isGreen ? '#059669' : (i < 5 ? '#2563eb' : '#7c3aed');
+            return `<div style="height:${STAGE_H + GAP}px;display:flex;align-items:center;padding-left:16px;">
+                                <div style="display:inline-flex;align-items:center;gap:4px;background:${pillBg};border:1.5px solid ${pillBorder};border-radius:99px;padding:5px 12px;white-space:nowrap;">
+                                    <span style="font-size:0.9rem;font-weight:800;color:${pillColor};">${rate}%</span>
+                                    <span style="font-size:0.58rem;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.08em;">Rate</span>
+                                </div>
+                            </div>`;
+        }).join('')}
+                    </div>
+                </div>
+            </div>`;
+    }
+
+
+
+
+
+
+
+
+    function updateAdvancedCharts(data) {
+        // Main Funnel Chart
+        renderFunnelChart();
+
+        // Rejection Analysis Chart
+        if (rejectionChartInstance && data.rejectionStats) {
+            rejectionChartInstance.data.labels = Object.keys(data.rejectionStats);
+            rejectionChartInstance.data.datasets[0].data = Object.values(data.rejectionStats);
+            rejectionChartInstance.update();
+        }
+
+        // Source Analysis Chart
+        if (sourceChartInstance && data.sourceStats) {
+            sourceChartInstance.data.labels = data.sourceStats.map(s => s.name);
+            sourceChartInstance.data.datasets[0].data = data.sourceStats.map(s => s.count);
+            sourceChartInstance.update();
+        }
+
+        // Time to Hire Chart
+        if (timeToHireChartInstance && data.recruiterStats) {
+            timeToHireChartInstance.data.labels = data.recruiterStats.filter(r => r.hired > 0).map(r => r.name);
+            timeToHireChartInstance.data.datasets[0].data = data.recruiterStats.filter(r => r.hired > 0).map(r => r.avgDays);
+            timeToHireChartInstance.update();
+
+            // Update Global Time to Hire Stat
+            const globalAvgTime = data.recruiterStats.reduce((sum, r) => sum + r.totalDays, 0) /
+                data.recruiterStats.reduce((sum, r) => sum + r.hiredWithDate, 0) || 0;
+            document.getElementById('stat-time-to-hire').innerText = Math.round(globalAvgTime);
+        }
     }
 
     function updateCharts() {
-        // Group by Month (Created Date)
+        // Group by Month (Created Date) for Recruitment Performance Line Chart
         const monthCounts = Array(12).fill(0);
         candidatesData.forEach(c => {
-            if (c.Applied_Date) {
-                const d = new Date(c.Applied_Date);
+            const dateStr = getVal(c, 'Applied_Date');
+            if (dateStr) {
+                const d = new Date(dateStr);
                 if (!isNaN(d)) monthCounts[d.getMonth()]++;
             }
         });
 
-        // We need to access the chart instance. 
-        // Since we created it in DOMContentLoaded, let's attach it to window or re-create.
-        // For simplicity, let's just trigger a re-render if the canvas exists and we have a global ref, 
-        // or easier: just destroy and recreate if we can access the context.
-        // Actually, let's look at the init code.
+        if (recruitmentChartInstance) {
+            recruitmentChartInstance.data.datasets[0].data = monthCounts;
+            recruitmentChartInstance.update();
+        }
     }
 
-    // 4. RENDER KANBAN
+    // 5. RENDER KANBAN & CANDIDATES
     function renderKanbanBoard() {
         const container = document.getElementById('kanban-container');
         if (!container) return;
@@ -586,21 +961,47 @@
         const projectCode = projFilter ? projFilter.value : '';
         const selectedProject = projectsData.find(p => p['Mã Dự án'] === projectCode);
 
+        // DEFAULT 7-step pipeline (used when no project selected)
+        const DEFAULT_PIPELINE = [
+            { Stage_Name: 'Ứng tuyển', Order: 1, Color: '#3B82F6' },
+            { Stage_Name: 'Xét duyệt hồ sơ', Order: 2, Color: '#06b6d4' },
+            { Stage_Name: 'Sơ vấn', Order: 3, Color: '#8B5CF6' },
+            { Stage_Name: 'Phỏng vấn', Order: 4, Color: '#F59E0B' },
+            { Stage_Name: 'Mời nhận việc', Order: 5, Color: '#10B981' },
+            { Stage_Name: 'Đã nhận việc', Order: 6, Color: '#059669' },
+            { Stage_Name: 'Từ chối', Order: 7, Color: '#EF4444' }
+        ];
+
         let dynamicStages = [];
         if (selectedProject && selectedProject['Quy trình (Workflow)']) {
-            const workflowParts = selectedProject['Quy trình (Workflow)'].split(',').map(s => s.trim());
+            // Use project-specific workflow
+            const workflowParts = selectedProject['Quy trình (Workflow)'].split(',').map(s => s.trim()).filter(s => s);
+            const colors = ['#3B82F6', '#06b6d4', '#8B5CF6', '#F59E0B', '#10B981', '#059669', '#EF4444'];
             dynamicStages = workflowParts.map((name, index) => ({
                 Stage_Name: name,
                 Order: index + 1,
-                Color: '#FFC107'
+                Color: colors[index % colors.length]
             }));
         } else {
-            dynamicStages = (stagesData && stagesData.length > 0) ? [...stagesData] : [
-                { Stage_Name: 'Apply', Order: 1, Color: '#0d6efd' },
-                { Stage_Name: 'Interview', Order: 2, Color: '#fd7e14' },
-                { Stage_Name: 'Offer', Order: 3, Color: '#198754' },
-                { Stage_Name: 'Rejected', Order: 4, Color: '#dc3545' }
-            ];
+            // When no project is selected: use dept filter to find matching project stages
+            const deptFilter = document.getElementById('filter-department')?.value || '';
+            if (deptFilter) {
+                // Try to find a project associated with this department
+                const deptProject = projectsData.find(p => p['Phòng ban'] === deptFilter && p['Quy trình (Workflow)']);
+                if (deptProject && deptProject['Quy trình (Workflow)']) {
+                    const workflowParts = deptProject['Quy trình (Workflow)'].split(',').map(s => s.trim()).filter(s => s);
+                    const colors = ['#3B82F6', '#06b6d4', '#8B5CF6', '#F59E0B', '#10B981', '#059669', '#EF4444'];
+                    dynamicStages = workflowParts.map((name, index) => ({
+                        Stage_Name: name,
+                        Order: index + 1,
+                        Color: colors[index % colors.length]
+                    }));
+                } else {
+                    dynamicStages = DEFAULT_PIPELINE;
+                }
+            } else {
+                dynamicStages = DEFAULT_PIPELINE;
+            }
         }
         dynamicStages.sort((a, b) => a.Order - b.Order);
 
@@ -612,24 +1013,56 @@
             return true;
         });
 
-        // Filter by Project if selected
-        if (projectCode) {
-            uniqueCandidates = uniqueCandidates.filter(c => {
-                const tID = getVal(c, 'TicketID');
-                if (!tID) return false;
-                const t = ticketsData.find(x => x['Mã Ticket'] == tID);
-                return t && t['Mã Dự án'] === projectCode;
-            });
-        }
-
         // Search Filter
-        const searchQ = document.getElementById('kanban-search')?.value.toLowerCase() || '';
-        if (searchQ) {
-            uniqueCandidates = uniqueCandidates.filter(c =>
-                (c.Name || '').toLowerCase().includes(searchQ) ||
-                (c.ID || '').toString().toLowerCase().includes(searchQ)
-            );
-        }
+        const searchQ = (document.getElementById('kanban-search-input')?.value || '').toLowerCase();
+
+        // New Filters
+        const ticketId = document.getElementById('kanban-filter-ticket')?.value || '';
+        const dept = document.getElementById('kanban-filter-dept')?.value || '';
+        const pos = document.getElementById('kanban-filter-pos')?.value || '';
+        const recruiter = document.getElementById('kanban-filter-recruiter')?.value || '';
+        const startDate = document.getElementById('kanban-filter-start')?.value || '';
+        const endDate = document.getElementById('kanban-filter-end')?.value || '';
+
+        uniqueCandidates = uniqueCandidates.filter(c => {
+            // Project
+            if (projectCode) {
+                const tID = getVal(c, 'TicketID') || getVal(c, 'Ticket');
+                const t = (ticketsData || []).find(x => x['Mã Ticket'] == tID || x.ID == tID);
+                if (!t || t['Mã Dự án'] !== projectCode) return false;
+            }
+            // Ticket
+            if (ticketId) {
+                const tID = getVal(c, 'TicketID') || getVal(c, 'Ticket');
+                if (tID != ticketId) return false;
+            }
+            // Dept
+            if (dept && getVal(c, 'Department') !== dept) return false;
+            // Position
+            if (pos && getVal(c, 'Position') !== pos) return false;
+            // Recruiter
+            if (recruiter && (getVal(c, 'Recruiter') || getVal(c, 'Assigned_To')) !== recruiter) return false;
+            // Date Range
+            if (startDate || endDate) {
+                const appDate = c.Applied_Date ? new Date(c.Applied_Date) : null;
+                if (appDate) {
+                    if (startDate && appDate < new Date(startDate)) return false;
+                    if (endDate) {
+                        const end = new Date(endDate);
+                        end.setHours(23, 59, 59, 999);
+                        if (appDate > end) return false;
+                    }
+                } else if (startDate || endDate) return false;
+            }
+            // Search
+            if (searchQ) {
+                const name = (c.Name || '').toLowerCase();
+                const phone = (getVal(c, 'Phone') || '').toLowerCase();
+                const email = (getVal(c, 'Email') || '').toLowerCase();
+                if (!name.includes(searchQ) && !phone.includes(searchQ) && !email.includes(searchQ)) return false;
+            }
+            return true;
+        });
 
         const fragment = document.createDocumentFragment();
 
@@ -693,56 +1126,55 @@
                 }
 
                 card.innerHTML = `
-                    <div class="d-flex align-items-start mb-2">
-                        <div class="candidate-avatar me-2" style="background: ${avatarColor}; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px;">
+                    <div class="d-flex align-items-start mb-3">
+                        <div class="candidate-avatar me-3" style="background: ${avatarColor}; width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; box-shadow: 0 4px 10px -2px ${avatarColor}44;">
                             ${initials}
                         </div>
-                        <div class="flex-grow-1">
-                            <h6 class="mb-0 fw-bold" style="font-size: 0.95rem;">${c.Name || 'N/A'}</h6>
-                            ${statusBadge}
+                        <div class="flex-grow-1 overflow-hidden">
+                            <h6 class="mb-1 fw-bold text-truncate" style="font-size: 0.95rem; color: var(--text-main);">${c.Name || 'N/A'}</h6>
+                            <div class="d-flex align-items-center flex-wrap gap-1">
+                                <span class="badge bg-light text-muted border" style="font-size: 0.65rem; font-weight: 500;">ID: ${c.ID}</span>
+                                ${statusBadge}
+                            </div>
                         </div>
                     </div>
-                    <p class="mb-1 small text-muted"><i class="fas fa-briefcase me-1"></i>${c.Position || 'N/A'}</p>
-                    <p class="mb-1 small text-muted"><i class="fas fa-envelope me-1"></i>${c.Email || 'N/A'}</p>
-                    <p class="mb-1 small text-muted"><i class="fas fa-phone me-1"></i>${c.Phone || 'N/A'}</p>
-                    ${c.Recruiter ? `<p class="mb-2 small text-muted"><i class="fas fa-user-tie me-1"></i>${c.Recruiter}</p>` : ''}
-                    <div class="d-flex justify-content-between align-items-center mt-2 pt-2" style="border-top: 1px solid #eee;">
-                        <small class="text-muted">${c.Applied_Date ? new Date(c.Applied_Date).toLocaleDateString('vi-VN') : ''}</small>
-                        <div class="btn-group btn-group-sm" role="group">
-                            <!-- Helper for Viewer Check -->
+                    
+                    <div class="card-info-grid mb-3" style="display: grid; grid-template-columns: 1fr; gap: 6px;">
+                        <div class="d-flex align-items-center text-muted" style="font-size: 0.8rem;">
+                            <span class="material-icons-round me-2" style="font-size: 16px; opacity: 0.6;">work_outline</span>
+                            <span class="text-truncate">${c.Position || 'N/A'}</span>
+                        </div>
+                        <div class="d-flex align-items-center text-muted" style="font-size: 0.8rem;">
+                            <span class="material-icons-round me-2" style="font-size: 16px; opacity: 0.6;">mail_outline</span>
+                            <span class="text-truncate">${c.Email || 'N/A'}</span>
+                        </div>
+                        <div class="d-flex align-items-center text-muted" style="font-size: 0.8rem;">
+                            <span class="material-icons-round me-2" style="font-size: 16px; opacity: 0.6;">phone_iphone</span>
+                            <span>${c.Phone || 'N/A'}</span>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-between align-items-center pt-3 mt-auto" style="border-top: 1px solid rgba(241, 245, 249, 0.8);">
+                        <div class="d-flex align-items-center text-muted" style="font-size: 0.7rem;">
+                            <span class="material-icons-round me-1" style="font-size: 14px; opacity: 0.5;">calendar_today</span>
+                            ${c.Applied_Date ? new Date(c.Applied_Date).toLocaleDateString('vi-VN') : 'N/A'}
+                        </div>
+                        <div class="btn-group" role="group">
                             ${(!currentUser || currentUser.role !== 'Viewer') ? `
-                            <button class="btn btn-outline-secondary btn-sm p-1" title="Gửi email" onclick="event.stopPropagation(); openSendEmailModal('${c.ID}');">
-                                <i class="fas fa-envelope" style="font-size: 0.75rem;"></i>
+                            <button class="btn btn-link p-1 text-muted hover-primary" title="Gửi email" onclick="event.stopPropagation(); openSendEmailModal('${c.ID}');">
+                                <span class="material-icons-round" style="font-size: 18px;">alternate_email</span>
                             </button>
                             ` : ''}
                             
-                            <!-- VIEW CV BUTTON -->
                             ${c.CV_Link ? `
-                            <button class="btn btn-outline-info btn-sm p-1" title="Xem CV" onclick="event.stopPropagation(); viewCandidateCV('${c.CV_Link}');">
-                                <i class="fas fa-file-alt" style="font-size: 0.75rem;"></i>
+                            <button class="btn btn-link p-1 text-info hover-info" title="Xem CV" onclick="event.stopPropagation(); viewCandidateCV('${c.CV_Link}');">
+                                <span class="material-icons-round" style="font-size: 18px;">description</span>
                             </button>
                             ` : ''}
 
-                            <!-- EVALUATION BUTTON (Only for Interview Stage) -->
-                            ${(stage.Stage_Name.toLowerCase().includes('phỏng vấn') || stage.Stage_Name.toLowerCase().includes('interview')) ? `
-                            <button class="btn btn-outline-success btn-sm p-1" title="Tạo Đánh giá" onclick="event.stopPropagation(); openCreateEvaluationModal('${c.ID}');">
-                                <i class="fas fa-clipboard-check" style="font-size: 0.75rem;"></i>
+                            <button class="btn btn-link p-1 text-primary hover-primary" title="Xem chi tiết" onclick="event.stopPropagation(); openCandidateDetail('${c.ID}');">
+                                <span class="material-icons-round" style="font-size: 18px;">visibility</span>
                             </button>
-                            ` : ''}
-
-                            <button class="btn btn-outline-primary btn-sm p-1" title="Xem chi tiết" onclick="event.stopPropagation(); openCandidateDetail('${c.ID}');">
-                                <i class="fas fa-eye" style="font-size: 0.75rem;"></i>
-                            </button>
-                            ${(!currentUser || currentUser.role !== 'Viewer') ? `
-                            <button class="btn btn-outline-warning btn-sm p-1" title="Sửa" onclick="event.stopPropagation(); editCandidate('${c.ID}');">
-                                <i class="fas fa-edit" style="font-size: 0.75rem;"></i>
-                            </button>
-                            <button class="btn btn-outline-danger btn-sm p-1" title="Xóa" onclick="event.stopPropagation(); deleteCandidate('${c.ID}');">
-                                <i class="fas fa-trash" style="font-size: 0.75rem;"></i>
-                            </button>
-                            ` : ''}
-                        </div>
-                    </div>
                         </div>
                     </div>
                 `;
@@ -778,17 +1210,14 @@
                         ghostClass: 'sortable-ghost',
                         chosenClass: 'sortable-chosen',
                         dragClass: 'sortable-drag',
-                        forceFallback: true,
+                        forceFallback: false,
                         fallbackClass: 'sortable-fallback',
                         fallbackOnBody: true,
                         swapThreshold: 0.65,
                         onStart: function (evt) {
                             console.log('🚀 Drag started');
-                            evt.item.style.opacity = '0.5';
                         },
                         onEnd: function (evt) {
-                            evt.item.style.opacity = '1';
-
                             const itemEl = evt.item;
                             const newStage = evt.to.getAttribute('data-stage');
                             const candidateId = itemEl.getAttribute('data-id');
@@ -798,13 +1227,13 @@
 
                             // Only update if stage actually changed
                             if (newStage && candidateId && newStage !== oldStage) {
-                                if (newStage.toLowerCase().includes('loại') || newStage.toLowerCase().includes('reject')) {
+                                if (newStage.toLowerCase().includes('loại') || newStage.toLowerCase().includes('reject') || newStage.toLowerCase().includes('từ chối')) {
                                     promptRejectionReason(function (rejectionData) {
                                         executeStatusUpdate(candidateId, newStage, rejectionData);
                                     }, function () {
                                         // On cancel, revert
                                         loadDashboardData();
-                                    });
+                                    }, oldStage);
                                 } else {
                                     executeStatusUpdate(candidateId, newStage, null);
                                 }
@@ -890,23 +1319,27 @@
            <td>
              <div class="btn-group btn-group-sm">
                 ${(!currentUser || currentUser.role !== 'Viewer') ? `
-                <button class="btn btn-outline-secondary btn-sm" title="Gửi email" onclick="openSendEmailModal('${c.ID}')">
-                    <i class="fas fa-envelope"></i>
+                <button class="btn btn-link p-1 text-muted" title="Gửi email" onclick="openSendEmailModal('${c.ID}')">
+                    <span class="material-icons-round" style="font-size: 18px;">alternate_email</span>
                 </button>
                 ` : ''}
 
                 ${c.CV_Link ? `
-                <button class="btn btn-outline-info btn-sm" title="Xem CV" onclick="viewCandidateCV('${c.CV_Link}')">
-                    <i class="fas fa-file-alt"></i>
+                <button class="btn btn-link p-1 text-info" title="Xem CV" onclick="viewCandidateCV('${c.CV_Link}')">
+                    <span class="material-icons-round" style="font-size: 18px;">description</span>
                 </button>
                 ` : ''}
 
-                 <button class="btn btn-outline-info btn-sm" onclick="openCandidateDetail('${c.ID}', 'view')" title="Xem chi tiết"><i class="fas fa-eye"></i></button>
+                 <button class="btn btn-link p-1 text-primary" onclick="openCandidateDetail('${c.ID}', 'view')" title="Xem chi tiết">
+                    <span class="material-icons-round" style="font-size: 18px;">visibility</span>
+                 </button>
 
                  ${(!currentUser || currentUser.role !== 'Viewer') ? `
-                 <button class="btn btn-outline-primary btn-sm" onclick="openCandidateDetail('${c.ID}', 'edit')" title="Chỉnh sửa"><i class="fas fa-edit"></i></button>
-                 <button class="btn btn-outline-danger btn-sm" title="Xóa" onclick="deleteCandidate('${c.ID}')">
-                     <i class="fas fa-trash"></i>
+                 <button class="btn btn-link p-1 text-primary" onclick="openCandidateDetail('${c.ID}', 'edit')" title="Chỉnh sửa">
+                    <span class="material-icons-round" style="font-size: 18px;">edit</span>
+                 </button>
+                 <button class="btn btn-link p-1 text-danger" title="Xóa" onclick="deleteCandidate('${c.ID}')">
+                    <span class="material-icons-round" style="font-size: 18px;">delete_outline</span>
                  </button>
                  ` : ''}
               </div>
@@ -918,6 +1351,186 @@
         // Append all at once
         tbody.appendChild(fragment);
     }
+
+    // ============================================================
+    // CANDIDATE PAGE FILTERS
+    // ============================================================
+    function populateCandidateFilters() {
+        const data = candidatesData;
+        const projects = [...new Set(data.map(c => getVal(c, 'Project')).filter(Boolean))].sort();
+        const tickets = [...new Set(data.map(c => getVal(c, 'Ticket_ID') || getVal(c, 'Ticket')).filter(Boolean))].sort();
+        const depts = [...new Set(data.map(c => getVal(c, 'Department')).filter(Boolean))].sort();
+        const rcrts = [...new Set(data.map(c => getVal(c, 'Recruiter') || getVal(c, 'Assigned_To')).filter(Boolean))].sort();
+
+        const setOpts = (id, arr) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const cur = el.value;
+            el.innerHTML = `<option value="">${el.options[0] ? el.options[0].text : ''}</option>`;
+            arr.forEach(v => {
+                const o = document.createElement('option');
+                o.value = v; o.textContent = v;
+                el.appendChild(o);
+            });
+            el.value = arr.includes(cur) ? cur : '';
+        };
+
+        const projEl = document.getElementById('cand-filter-project');
+        if (projEl) { const cur = projEl.value; projEl.innerHTML = '<option value="">Tất cả Dự án</option>'; projects.forEach(v => projEl.innerHTML += `<option value="${v}">${v}</option>`); projEl.value = cur; }
+
+        const tickEl = document.getElementById('cand-filter-ticket');
+        if (tickEl) { const cur = tickEl.value; tickEl.innerHTML = '<option value="">Tất cả Ticket</option>'; tickets.forEach(v => tickEl.innerHTML += `<option value="${v}">${v}</option>`); tickEl.value = cur; }
+
+        const deptEl = document.getElementById('cand-filter-dept');
+        if (deptEl) { const cur = deptEl.value; deptEl.innerHTML = '<option value="">Phòng ban</option>'; depts.forEach(v => deptEl.innerHTML += `<option value="${v}">${v}</option>`); deptEl.value = cur; }
+
+        // Populate positions based on dept selection
+        const dept = document.getElementById('cand-filter-dept')?.value || '';
+        const positions = [...new Set(data.filter(c => !dept || getVal(c, 'Department') === dept).map(c => getVal(c, 'Position')).filter(Boolean))].sort();
+        const posEl = document.getElementById('cand-filter-pos');
+        if (posEl) { const cur = posEl.value; posEl.innerHTML = '<option value="">Tất cả vị trí</option>'; positions.forEach(v => posEl.innerHTML += `<option value="${v}">${v}</option>`); posEl.value = positions.includes(cur) ? cur : ''; }
+
+        const rcrEl = document.getElementById('cand-filter-recruiter');
+        if (rcrEl) { const cur = rcrEl.value; rcrEl.innerHTML = '<option value="">Người phụ trách</option>'; rcrts.forEach(v => rcrEl.innerHTML += `<option value="${v}">${v}</option>`); rcrEl.value = cur; }
+    }
+
+    function onCandDeptChange() {
+        // Re-populate positions based on selected dept
+        const dept = document.getElementById('cand-filter-dept')?.value || '';
+        const positions = [...new Set(
+            candidatesData.filter(c => !dept || getVal(c, 'Department') === dept)
+                .map(c => getVal(c, 'Position')).filter(Boolean)
+        )].sort();
+        const posEl = document.getElementById('cand-filter-pos');
+        if (posEl) {
+            posEl.innerHTML = '<option value="">Tất cả vị trí</option>';
+            positions.forEach(v => posEl.innerHTML += `<option value="${v}">${v}</option>`);
+        }
+        applyCandidateFilters();
+    }
+
+    function applyCandidateFilters() {
+        const project = document.getElementById('cand-filter-project')?.value || '';
+        const ticket = document.getElementById('cand-filter-ticket')?.value || '';
+        const dept = document.getElementById('cand-filter-dept')?.value || '';
+        const pos = document.getElementById('cand-filter-pos')?.value || '';
+        const recruiter = document.getElementById('cand-filter-recruiter')?.value || '';
+        const status = document.getElementById('cand-filter-status')?.value || '';
+        const startStr = document.getElementById('cand-filter-start')?.value || '';
+        const endStr = document.getElementById('cand-filter-end')?.value || '';
+        const search = (document.getElementById('cand-search-input')?.value || '').toLowerCase().trim();
+        const startDate = startStr ? new Date(startStr) : null;
+        const endDate = endStr ? new Date(endStr + 'T23:59:59') : null;
+
+        let filtered = candidatesData.filter(c => {
+            if (project && getVal(c, 'Project') !== project) return false;
+            if (ticket && (getVal(c, 'Ticket_ID') || getVal(c, 'Ticket')) !== ticket) return false;
+            if (dept && getVal(c, 'Department') !== dept) return false;
+            if (pos && getVal(c, 'Position') !== pos) return false;
+            if (recruiter && (getVal(c, 'Recruiter') || getVal(c, 'Assigned_To')) !== recruiter) return false;
+            if (status && !norm(getVal(c, 'Stage') || getVal(c, 'Status')).includes(status)) return false;
+            if (startDate && new Date(getVal(c, 'Applied_Date')) < startDate) return false;
+            if (endDate && new Date(getVal(c, 'Applied_Date')) > endDate) return false;
+            if (search) {
+                const name = (getVal(c, 'Name') || '').toLowerCase();
+                const phone = (getVal(c, 'Phone') || '').toLowerCase();
+                const email = (getVal(c, 'Email') || '').toLowerCase();
+                if (!name.includes(search) && !phone.includes(search) && !email.includes(search)) return false;
+            }
+            return true;
+        });
+
+        // Render filtered results
+        const tbody = document.querySelector('#candidates-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const fragment = document.createDocumentFragment();
+        filtered.forEach(c => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+               <td>${c.ID}</td>
+               <td class="fw-bold cursor-pointer text-primary" onclick="openCandidateDetail('${c.ID}')">${c.Name}</td>
+               <td>${c.Position || ''}</td>
+               <td>${c.Applied_Date ? new Date(c.Applied_Date).toLocaleDateString() : ''}</td>
+               <td><span class="badge bg-info text-dark">${getVal(c, 'Stage') || getVal(c, 'Status') || ''}</span></td>
+               <td>
+                 <div class="btn-group btn-group-sm">
+                   ${(!currentUser || currentUser.role !== 'Viewer') ? `<button class="btn btn-link p-1 text-muted" title="Gửi email" onclick="openSendEmailModal('${c.ID}')"><span class="material-icons-round" style="font-size:18px;">alternate_email</span></button>` : ''}
+                   ${c.CV_Link ? `<button class="btn btn-link p-1 text-info" title="Xem CV" onclick="viewCandidateCV('${c.CV_Link}')"><span class="material-icons-round" style="font-size:18px;">description</span></button>` : ''}
+                   <button class="btn btn-link p-1 text-primary" onclick="openCandidateDetail('${c.ID}','view')" title="Xem chi tiết"><span class="material-icons-round" style="font-size:18px;">visibility</span></button>
+                   ${(!currentUser || currentUser.role !== 'Viewer') ? `
+                   <button class="btn btn-link p-1 text-primary" onclick="openCandidateDetail('${c.ID}','edit')" title="Chỉnh sửa"><span class="material-icons-round" style="font-size:18px;">edit</span></button>
+                   <button class="btn btn-link p-1 text-danger" title="Xóa" onclick="deleteCandidate('${c.ID}')"><span class="material-icons-round" style="font-size:18px;">delete_outline</span></button>
+                   ` : ''}
+                 </div>
+               </td>`;
+            fragment.appendChild(tr);
+        });
+        tbody.appendChild(fragment);
+    }
+
+    function resetCandidateFilters() {
+        ['cand-filter-project', 'cand-filter-ticket', 'cand-filter-dept', 'cand-filter-pos',
+            'cand-filter-recruiter', 'cand-filter-status', 'cand-filter-start', 'cand-filter-end'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+        const si = document.getElementById('cand-search-input');
+        if (si) si.value = '';
+        applyCandidateFilters();
+    }
+
+    // ============================================================
+    // KANBAN PAGE FILTERS
+    // ============================================================
+    function populateKanbanFilters() {
+        const data = candidatesData;
+        const projects = [...new Set(data.map(c => getVal(c, 'Project')).filter(Boolean))].sort();
+        const tickets = [...new Set(data.map(c => getVal(c, 'Ticket_ID') || getVal(c, 'Ticket')).filter(Boolean))].sort();
+        const depts = [...new Set(data.map(c => getVal(c, 'Department')).filter(Boolean))].sort();
+        const rcrts = [...new Set(data.map(c => getVal(c, 'Recruiter') || getVal(c, 'Assigned_To')).filter(Boolean))].sort();
+
+        const setOpts = (id, arr) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const cur = el.value;
+            el.innerHTML = `<option value="">${el.options[0]?.text || 'Tất cả'}</option>`;
+            arr.forEach(v => el.innerHTML += `<option value="${v}">${v}</option>`);
+            el.value = arr.includes(cur) ? cur : '';
+        };
+
+        setOpts('kanban-filter-project', projects);
+        setOpts('kanban-filter-ticket', tickets);
+        setOpts('kanban-filter-dept', depts);
+        setOpts('kanban-filter-recruiter', rcrts);
+
+        onKanbanDeptChange(); // Initial position call
+    }
+
+    function onKanbanDeptChange() {
+        const dept = document.getElementById('kanban-filter-dept')?.value || '';
+        const positions = [...new Set(candidatesData.filter(c => !dept || getVal(c, 'Department') === dept).map(c => getVal(c, 'Position')).filter(Boolean))].sort();
+        const posEl = document.getElementById('kanban-filter-pos');
+        if (posEl) {
+            const cur = posEl.value;
+            posEl.innerHTML = '<option value="">Vị trí</option>';
+            positions.forEach(v => posEl.innerHTML += `<option value="${v}">${v}</option>`);
+            posEl.value = positions.includes(cur) ? cur : '';
+        }
+        renderKanbanBoard();
+    }
+
+    function resetKanbanFilters() {
+        ['kanban-filter-project', 'kanban-filter-ticket', 'kanban-filter-dept', 'kanban-filter-pos',
+            'kanban-filter-recruiter', 'kanban-filter-start', 'kanban-filter-end'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+        const si = document.getElementById('kanban-search-input');
+        if (si) si.value = '';
+        renderKanbanBoard();
+    }
+
 
     function viewCandidateCV(link) {
         if (!link) {
@@ -961,10 +1574,7 @@
         });
     }
 
-    // 9. CANDIDATE DETAILS
-    // -------------------------------------------------------------------------
-    // 4. CANDIDATE DETAIL MODAL LOGIC (OPEN/SAVE)
-    // -------------------------------------------------------------------------
+    // 6. CANDIDATE DETAILS & MODAL LOGIC
 
     // OPEN CANDIDATE DETAIL MODAL
     function openCandidateDetail(candidateId = null, mode = 'edit') {
@@ -989,7 +1599,7 @@
             if (form) form.reset();
             const idInput = document.getElementById('current-candidate-id');
             if (idInput) idInput.value = '';
-            modalTitle.innerHTML = '<i class="fas fa-user-plus me-2"></i>Thêm ứng viên mới';
+            modalTitle.innerHTML = '<span class="material-icons-round text-white me-2">person_add</span> Thêm ứng viên mới';
 
             // RESET AI MATCH UI
             resetAiMatchUI();
@@ -1028,7 +1638,7 @@
 
         document.getElementById('current-candidate-id').value = c.ID;
         modal.setAttribute('data-candidate-id', c.ID);
-        modalTitle.innerHTML = `<i class="fas fa-user-edit me-2"></i>Chi tiết: ${c.Name || 'Ứng viên'}`;
+        modalTitle.innerHTML = `<span class="material-icons-round text-white me-2" style="font-size: 24px;">person</span> Chi tiết: ${c.Name || 'Ứng viên'}`;
 
         // RESET AI MATCH UI
         resetAiMatchUI();
@@ -1040,31 +1650,72 @@
         document.getElementById('detail-dob').value = c.Birth_Year || '';
         document.getElementById('detail-phone').value = c.Phone || '';
         document.getElementById('detail-email').value = c.Email || '';
-        document.getElementById('detail-department').value = c.Department || '';
-        document.getElementById('detail-position').value = c.Position || '';
         document.getElementById('detail-experience').value = c.Experience || '';
         document.getElementById('detail-school').value = c.School || '';
         document.getElementById('detail-education-level').value = c.Education_Level || '';
         document.getElementById('detail-major').value = c.Major || '';
         document.getElementById('detail-salary').value = c.Salary_Expectation || '';
-        document.getElementById('detail-source').value = c.Source || '';
-        document.getElementById('detail-recruiter').value = c.Recruiter || '';
-        document.getElementById('detail-status').value = c.Stage || '';
-        document.getElementById('detail-contact-status').value = c.Status || '';
         document.getElementById('detail-cv-link').value = c.CV_Link || '';
 
+        // ReadOnly context fields
+        if (document.getElementById('detail-applied-date')) {
+            document.getElementById('detail-applied-date').value = c.Applied_Date ? formatDate(c.Applied_Date) : 'Không rõ';
+        }
+        if (document.getElementById('detail-creator')) {
+            document.getElementById('detail-creator').value = c.User || 'Hệ thống';
+        }
+
         // Rejection Data
-        if (document.getElementById('detail-rejection-source')) document.getElementById('detail-rejection-source').value = c.Rejection_Source || '';
-        if (document.getElementById('detail-rejection-type')) document.getElementById('detail-rejection-type').value = c.Rejection_Type || '';
+        if (document.getElementById('detail-rejection-source')) {
+            const rSource = c.Rejection_Source || '';
+            document.getElementById('detail-rejection-source').value = rSource;
+            if (typeof populateRejectionType === 'function') populateRejectionType(rSource, c.Rejection_Type || '');
+        }
         if (document.getElementById('detail-rejection-reason')) document.getElementById('detail-rejection-reason').value = c.Rejection_Reason || '';
+        if (document.getElementById('detail-rejection-stage')) {
+            // Populate rejection stage options from the main stage list for selection in modal
+            // This is a bit tricky since we need the Project stages
+            updateDetailRejectionStageOptions();
+            document.getElementById('detail-rejection-stage').value = c.Rejection_Stage || '';
+        }
+
+        // Populate dynamic dropdowns (Fixing the "Empty Dropdown" issue in Edit mode)
+        if (typeof populateDepartmentDropdown === 'function') {
+            populateDepartmentDropdown(c.Department, () => {
+                if (typeof populatePositionDropdown === 'function') populatePositionDropdown(c.Position);
+            });
+        }
+        if (typeof populateRecruiterSelect === 'function') populateRecruiterSelect('detail-recruiter', c.Recruiter);
+        if (document.getElementById('detail-source')) {
+            document.getElementById('detail-source').setAttribute('data-value', c.Source || '');
+            if (typeof loadCandidateSources === 'function') loadCandidateSources();
+        }
+        if (typeof populateStatusDropdown === 'function') populateStatusDropdown(c.Stage);
+        if (typeof populateTicketDropdown === 'function') populateTicketDropdown(c.TicketID);
+
+        document.getElementById('detail-contact-status').value = c.Status || '';
 
         // Populate dynamic dropdowns
         if (typeof populateTicketDropdown === 'function') populateTicketDropdown(c.TicketID);
 
         // Handle Visibility of Rejection tracking
         const rejectionSection = document.getElementById('rejection-detail-section');
+        const rejectionSummary = document.getElementById('rejection-info-summary');
         const isRejected = (c.Stage || '').toLowerCase().includes('loại') || (c.Stage || '').toLowerCase().includes('reject') || (c.Stage || '').toLowerCase().includes('từ chối');
+
         if (rejectionSection) rejectionSection.style.display = isRejected ? 'block' : 'none';
+
+        // Update Rejection Summary in Notes Tab
+        if (rejectionSummary) {
+            if (isRejected) {
+                document.getElementById('summary-rejection-stage').innerText = 'Giai đoạn: ' + (c.Rejection_Stage || 'N/A');
+                document.getElementById('summary-rejection-source-type').innerText = (c.Rejection_Source || 'Company') + ' - ' + (c.Rejection_Type || 'N/A');
+                document.getElementById('summary-rejection-reason').innerText = c.Rejection_Reason || 'N/A';
+                rejectionSummary.style.display = 'block';
+            } else {
+                rejectionSummary.style.display = 'none';
+            }
+        }
 
         // Note history
         renderNoteHistory(c.Notes, notesHistoryDiv);
@@ -1125,6 +1776,35 @@
     }
 
     // FUNCTION TO POPULATE REJECTION TYPE BY SOURCE
+    function updateDetailRejectionStageOptions() {
+        const stageSelect = document.getElementById('detail-rejection-stage');
+        if (!stageSelect) return;
+
+        // Try to get stages from the main status dropdown
+        const statusSelect = document.getElementById('detail-status');
+        if (statusSelect && statusSelect.options.length > 0) {
+            const currentVal = stageSelect.value;
+            stageSelect.innerHTML = '<option value="">-- Chọn bước --</option>';
+            Array.from(statusSelect.options).forEach(opt => {
+                if (opt.value && !opt.value.toLowerCase().includes('loại') && !opt.value.toLowerCase().includes('reject') && !opt.value.toLowerCase().includes('từ chối')) {
+                    const option = document.createElement('option');
+                    option.value = opt.value;
+                    option.innerText = opt.innerText;
+                    stageSelect.appendChild(option);
+                }
+            });
+            stageSelect.value = currentVal;
+        }
+    }
+
+    // Helper formatDate
+    function formatDate(dStr) {
+        if (!dStr) return '';
+        const d = new Date(dStr);
+        if (isNaN(d.getTime())) return dStr;
+        return d.toLocaleDateString('vi-VN');
+    }
+
     function populateRejectionType(source, selectedValue = '') {
         const select = document.getElementById('detail-rejection-type');
         if (!select) return;
@@ -1217,26 +1897,35 @@
     }
 
     function initCharts() {
-        if (document.getElementById('recruitmentChart')) {
-            const ctx1 = document.getElementById('recruitmentChart').getContext('2d');
-            recruitmentChartInstance = new Chart(ctx1, {
-                type: 'line',
+        // 1. Phễu Tuyển Dụng (User Requested Main Chart)
+        if (document.getElementById('funnelChartMain')) {
+            const ctxMain = document.getElementById('funnelChartMain').getContext('2d');
+            funnelChartMainInstance = new Chart(ctxMain, {
+                type: 'bar',
                 data: {
-                    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+                    labels: ['Tổng ứng viên', 'Đang sơ vấn', 'Tổng ứng viên đạt', 'Đã nhận việc'],
                     datasets: [{
-                        label: 'Ứng tuyển theo tháng',
-                        data: Array(12).fill(0), // Init empty
-                        borderColor: '#FFC107',
-                        tension: 0.4,
-                        fill: true,
-                        backgroundColor: 'rgba(255, 193, 7, 0.1)'
+                        label: 'Số lượng ứng viên',
+                        data: [0, 0, 0, 0],
+                        backgroundColor: ['#3B82F6', '#F59E0B', '#10B981', '#8B5CF6'],
+                        borderRadius: 10,
+                        barThickness: 40
                     }]
                 },
-                options: { responsive: true }
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { beginAtZero: true, grid: { display: false } },
+                        y: { grid: { display: false }, ticks: { font: { weight: 'bold', size: 13 } } }
+                    }
+                }
             });
         }
 
-        // Ensure Source Chart also exists (if added in HTML)
+        // 2. Nguồn ứng viên
         if (document.getElementById('sourceChart')) {
             const ctx2 = document.getElementById('sourceChart').getContext('2d');
             sourceChartInstance = new Chart(ctx2, {
@@ -1245,31 +1934,55 @@
                     labels: ['Website', 'LinkedIn', 'Facebook', 'Referral', 'Other'],
                     datasets: [{
                         data: [0, 0, 0, 0, 0],
-                        backgroundColor: ['#FFC107', '#0D6EFD', '#198754', '#DC3545', '#6C757D']
+                        backgroundColor: ['#0d6efd', '#0dcaf0', '#198754', '#ffc107', '#6c757d']
                     }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+        }
+
+        // 4. Rejection Analysis Chart
+        if (document.getElementById('rejectionAnalysisChart')) {
+            const ctx4 = document.getElementById('rejectionAnalysisChart').getContext('2d');
+            rejectionChartInstance = new Chart(ctx4, {
+                type: 'pie',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        data: [],
+                        backgroundColor: ['#dc3545', '#fd7e14', '#ffc107', '#20c997', '#0dcaf0', '#0d6efd', '#6610f2', '#6f42c1', '#e83e8c', '#adb5bd']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'bottom' }
+                    }
                 }
             });
         }
 
-        // 3. Funnel Chart
-        if (document.getElementById('funnelChart')) {
-            const ctx3 = document.getElementById('funnelChart').getContext('2d');
-            funnelChartInstance = new Chart(ctx3, {
+        // 5. Time To Hire Chart
+        if (document.getElementById('timeToHireChart')) {
+            const ctx5 = document.getElementById('timeToHireChart').getContext('2d');
+            timeToHireChartInstance = new Chart(ctx5, {
                 type: 'bar',
                 data: {
                     labels: [],
                     datasets: [{
-                        label: 'Số lượng ứng viên',
+                        label: 'Số ngày trung bình',
                         data: [],
-                        backgroundColor: '#0dcaf0',
+                        backgroundColor: '#6610f2',
                         borderRadius: 5
                     }]
                 },
                 options: {
-                    indexAxis: 'y',
                     responsive: true,
                     scales: {
-                        x: { beginAtZero: true }
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Số ngày' }
+                        }
                     }
                 }
             });
@@ -1278,29 +1991,11 @@
 
     // Update data for chart
     function updateCharts() {
-        if (!recruitmentChartInstance) return;
-
-
-        // 1. Line Chart Data
-        const monthCounts = Array(12).fill(0);
-        candidatesData.forEach(c => {
-            if (c.Applied_Date) {
-                const dateParts = c.Applied_Date.split('T')[0].split('-'); // YYYY-MM-DD
-                if (dateParts.length === 3) {
-                    const month = parseInt(dateParts[1], 10) - 1; // 0-indexed
-                    if (month >= 0 && month <= 11) monthCounts[month]++;
-                }
-            }
-        });
-
-        recruitmentChartInstance.data.datasets[0].data = monthCounts;
-        recruitmentChartInstance.update();
-
-        // 2. Source Chart Data (if implemented)
+        // 1. Source Chart Data
         if (sourceChartInstance) {
             const sources = { 'Website': 0, 'LinkedIn': 0, 'Facebook': 0, 'Referral': 0, 'Other': 0 };
             candidatesData.forEach(c => {
-                let s = c.Source || 'Other';
+                let s = getVal(c, 'Source') || 'Other';
                 if (sources.hasOwnProperty(s)) sources[s]++;
                 else sources['Other']++;
             });
@@ -1308,42 +2003,22 @@
             sourceChartInstance.update();
         }
 
-        // 3. Funnel & Analytics
-        calculateAnalytics();
+        // 2. Global Analytics (Basic counts)
+        // updateDashboardStats() is called after data load, 
+        // which triggers apiGetAdvancedReports for the heavy lifting.
     }
 
     function calculateAnalytics() {
-        // A. Funnel Data
-        if (funnelChartInstance) {
-            const stageCounts = {};
-            if (stagesData.length > 0) {
-                stagesData.sort((a, b) => a.Order - b.Order).forEach(s => stageCounts[s.Stage_Name] = 0);
-            } else {
-                ['Apply', 'Screening', 'Interview', 'Offer', 'Hired'].forEach(s => stageCounts[s] = 0);
-            }
+        // Calculate Conversion Rate
+        const total = candidatesData.length;
+        const hiredCount = candidatesData.filter(c => {
+            const s = (getVal(c, 'Stage') || '').toLowerCase();
+            return s.includes('hired') || s.includes('đã tuyển') || s.includes('nhận việc') || s.includes('official');
+        }).length;
 
-            candidatesData.forEach(c => {
-                const s = getVal(c, 'Stage');
-                if (s && stageCounts.hasOwnProperty(s)) {
-                    stageCounts[s]++;
-                }
-            });
-
-            funnelChartInstance.data.labels = Object.keys(stageCounts);
-            funnelChartInstance.data.datasets[0].data = Object.values(stageCounts);
-            funnelChartInstance.update();
-
-            // Calculate Conversion Rate
-            const total = candidatesData.length;
-            const hiredCount = candidatesData.filter(c => {
-                const s = (getVal(c, 'Stage') || '').toLowerCase();
-                return s.includes('hired') || s.includes('đã tuyển') || s.includes('nhận việc') || s.includes('official');
-            }).length;
-
-            if (total > 0 && document.getElementById('stat-conversion-rate')) {
-                const rate = ((hiredCount / total) * 100).toFixed(1);
-                document.getElementById('stat-conversion-rate').innerText = rate + '%';
-            }
+        if (total > 0 && document.getElementById('stat-conversion-rate')) {
+            const rate = ((hiredCount / total) * 100).toFixed(1);
+            document.getElementById('stat-conversion-rate').innerText = rate + '%';
         }
 
         // B. Advanced Analytics: Rejection & Time to Hire
@@ -1447,6 +2122,7 @@
             Rejection_Source: document.getElementById('detail-rejection-source') ? document.getElementById('detail-rejection-source').value : '',
             Rejection_Type: document.getElementById('detail-rejection-type') ? document.getElementById('detail-rejection-type').value : '',
             Rejection_Reason: document.getElementById('detail-rejection-reason') ? document.getElementById('detail-rejection-reason').value : '',
+            Rejection_Stage: document.getElementById('detail-rejection-stage') ? document.getElementById('detail-rejection-stage').value : '',
 
             NewNote: document.getElementById('detail-new-note').value,
             User: currentUser.username || currentUser.email
@@ -1481,6 +2157,7 @@
                 promptRejectionReason(function (rejectionData) {
                     data.Rejection_Type = rejectionData.type;
                     data.Rejection_Reason = rejectionData.reason;
+                    data.Rejection_Stage = rejectionData.stage;
                     continueSaving();
                 }, function () {
                     // Cancel
@@ -1719,9 +2396,12 @@
         const modalEl = document.getElementById('addJobModal');
         modalEl.setAttribute('data-editing-id', id);
 
-        // UI Updates
-        document.querySelector('#addJobModal .modal-title').innerText = 'Cập nhật Tin Tuyển Dụng';
-        document.querySelector('#addJobModal .btn-primary-custom').innerText = 'Cập nhật';
+        // UI Updates with fallbacks
+        const modalTitle = document.querySelector('#addJobModal .modal-title');
+        if (modalTitle) modalTitle.innerText = 'Cập nhật Tin Tuyển Dụng';
+
+        const saveBtn = document.querySelector('#addJobModal .btn-primary-custom') || document.querySelector('#addJobModal .btn-primary:not(.btn-light)');
+        if (saveBtn) saveBtn.innerText = 'Cập nhật';
 
         // Show Modal - sau đó 'shown.bs.modal' sẽ chạy và populate dropdowns
         const modal = new bootstrap.Modal(modalEl);
@@ -2191,13 +2871,29 @@
         }).apiSaveRejectionReasons(reasons);
     }
 
-    function promptRejectionReason(onConfirm, onCancel) {
+    function promptRejectionReason(onConfirm, onCancel, currentStage = '') {
         const reasons = window.rejectionReasonsData || [];
         const companyReasons = reasons.filter(r => r.Type === 'Company').sort((a, b) => a.Order - b.Order);
         const candidateReasons = reasons.filter(r => r.Type === 'Candidate').sort((a, b) => a.Order - b.Order);
 
+        // Get available stages from settings or a global variable if available
+        // Usually, stages are in 'stagesData' or can be fetched from the status dropdown options
+        const statusSelect = document.getElementById('detail-status');
+        let stages = [];
+        if (statusSelect) {
+            stages = Array.from(statusSelect.options).map(opt => opt.value).filter(v =>
+                v && !v.toLowerCase().includes('loại') && !v.toLowerCase().includes('reject') && !v.toLowerCase().includes('từ chối')
+            );
+        }
+
         let html = `
             <div class="text-start">
+                <label class="form-label small fw-bold">Giai đoạn bị từ chối</label>
+                <select id="swal-reject-stage" class="form-select mb-3">
+                    <option value="">-- Chọn giai đoạn --</option>
+                    ${stages.map(s => `<option value="${s}" ${s === currentStage ? 'selected' : ''}>${s}</option>`).join('')}
+                </select>
+
                 <label class="form-label small fw-bold">Loại từ chối</label>
                 <select id="swal-reject-type" class="form-select mb-3" onchange="updateSwalReasons()">
                     <option value="Company">Công ty từ chối</option>
@@ -2228,12 +2924,16 @@
             confirmButtonText: 'Xác nhận',
             cancelButtonText: 'Hủy',
             preConfirm: () => {
+                const stage = document.getElementById('swal-reject-stage').value;
                 const type = document.getElementById('swal-reject-type').value;
                 let reason = document.getElementById('swal-reject-reason').value;
-                if (reason === 'Khác') {
-                    return Swal.showValidationMessage('Vui lòng chọn hoặc nhập lý do khác (Tính năng nhập text đang phát triển)');
+                if (!stage) {
+                    return Swal.showValidationMessage('Vui lòng chọn giai đoạn bị từ chối');
                 }
-                return { type: type, reason: reason };
+                if (reason === 'Khác') {
+                    return Swal.showValidationMessage('Vui lòng chọn hoặc nhập lý do khác');
+                }
+                return { stage: stage, type: type, reason: reason };
             }
         }).then((result) => {
             if (result.isConfirmed) {
@@ -2876,14 +3576,17 @@
         // Reset form tags and attachments
         document.querySelectorAll('.email-tag').forEach(t => t.remove());
         emailAttachments = [];
-        document.getElementById('email-attachments-list').innerHTML = '';
-        document.getElementById('email-attachments-list').style.display = 'none';
+        const attachmentsList = document.getElementById('email-attachments-list');
+        if (attachmentsList) {
+            attachmentsList.innerHTML = '';
+            attachmentsList.style.display = 'none';
+        }
 
         document.getElementById('email-candidate-id').value = candidateId;
         document.getElementById('sendEmailModal').setAttribute('data-candidate-id', candidateId);
         document.getElementById('email-to').value = c.Email || '';
         document.getElementById('email-subject').value = '';
-        quill.setContents([]);
+        if (quill) quill.setContents([]);
 
         // Populate Templates Dropdown
         if (emailTemplatesData.length === 0) {
@@ -2895,18 +3598,24 @@
             populateTemplateDropdown();
         }
 
-        const modal = new bootstrap.Modal(document.getElementById('sendEmailModal'));
+        // Fix "black screen" by reusing instance or ensuring no duplicate backdrops
+        const modalEl = document.getElementById('sendEmailModal');
+        let modal = bootstrap.Modal.getInstance(modalEl);
+        if (!modal) {
+            modal = new bootstrap.Modal(modalEl);
+        }
         modal.show();
 
         // Load draft if exists
         const draft = localStorage.getItem(`draft_email_${candidateId}`);
+        const draftStatus = document.getElementById('email-draft-status');
         if (draft) {
             const d = JSON.parse(draft);
             document.getElementById('email-subject').value = d.subject || '';
-            quill.root.innerHTML = d.body || '';
-            document.getElementById('email-draft-status').innerText = `Tải lại bản nháp lúc ${d.time}`;
+            if (quill) quill.root.innerHTML = d.body || '';
+            if (draftStatus) draftStatus.innerText = `Tải lại bản nháp lúc ${d.time}`;
         } else {
-            document.getElementById('email-draft-status').innerText = '';
+            if (draftStatus) draftStatus.innerText = '';
         }
     }
 
@@ -3171,27 +3880,42 @@
     }
 
     // Populate position dropdown based on selected department
-    function populatePositionDropdown(selectedPosition) {
-        const deptDropdown = document.getElementById('detail-department');
-        const posDropdown = document.getElementById('detail-position');
+    function populatePositionDropdown(selectedPosition, elementId = 'detail-position') {
+        const select = document.getElementById(elementId);
+        if (!select) return;
 
-        if (!deptDropdown || !posDropdown) return;
+        let currentDept = '';
+        if (elementId === 'filter-dash-pos') {
+            currentDept = document.getElementById('filter-dash-dept')?.value;
+        } else {
+            currentDept = document.getElementById('detail-department')?.value;
+        }
 
-        const selectedDept = deptDropdown.value;
-        posDropdown.innerHTML = '<option value="">Chọn vị trí</option>';
+        select.innerHTML = '<option value="">' + (elementId.includes('filter') ? 'Tất cả vị trí' : 'Chọn vị trí') + '</option>';
 
-        if (!selectedDept) return;
-
-        const dept = departmentsData.find(d => d.name === selectedDept);
-        if (dept && dept.positions) {
-            dept.positions.forEach(pos => {
-                const option = document.createElement('option');
-                option.value = pos;
-                option.textContent = pos;
-                if (pos === selectedPosition) {
-                    option.selected = true;
-                }
-                posDropdown.appendChild(option);
+        if (currentDept) {
+            const dept = departmentsData.find(d => (d.name || d) === currentDept);
+            if (dept && dept.positions) {
+                dept.positions.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p;
+                    opt.innerText = p;
+                    if (p === selectedPosition) opt.selected = true;
+                    select.appendChild(opt);
+                });
+            }
+        } else if (elementId.includes('filter')) {
+            // Populate all unique positions if no dept selected in filter
+            const allPos = new Set();
+            departmentsData.forEach(d => {
+                if (d.positions) d.positions.forEach(p => allPos.add(p));
+            });
+            allPos.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.innerText = p;
+                if (p === selectedPosition) opt.selected = true;
+                select.appendChild(opt);
             });
         }
     }
@@ -3340,55 +4064,70 @@
         }).apiDeleteRecruiter(id);
     }
 
-    // Updated populateFilterDropdowns to use recruitersData
+    // Updated populateFilterDropdowns to support Dashboard Filters
     function populateFilterDropdowns() {
-        // Populate department filter
+        populateRecruiterSelect('kanban-filter-recruiter', '');
+        populateRecruiterSelect('filter-dash-recruiter', '');
+
+        // 1. Kanban Filters
         const deptFilter = document.getElementById('filter-department');
         if (deptFilter && departmentsData.length > 0) {
-            deptFilter.innerHTML = '<option value="">Tất cả phòng ban</option>';
-            const uniqueDepts = [...new Set(departmentsData.map(d => d.name))];
-            uniqueDepts.forEach(dept => {
-                const option = document.createElement('option');
-                option.value = dept;
-                option.textContent = dept;
-                if (kanbanFilters.department === dept) option.selected = true;
-                deptFilter.appendChild(option);
+            deptFilter.innerHTML = '<option value="">Phòng ban</option>';
+            departmentsData.forEach(d => {
+                const opt = document.createElement('option');
+                opt.value = d.name || d;
+                opt.innerText = d.name || d;
+                deptFilter.appendChild(opt);
             });
         }
 
-        // Populate position filter (all positions from all departments)
-        const posFilter = document.getElementById('filter-position');
-        if (posFilter && departmentsData.length > 0) {
-            posFilter.innerHTML = '<option value="">Tất cả vị trí</option>';
-            const allPositions = [];
-            departmentsData.forEach(dept => {
-                dept.positions.forEach(pos => {
-                    if (!allPositions.includes(pos)) {
-                        allPositions.push(pos);
-                    }
-                });
-            });
-            allPositions.forEach(pos => {
-                const option = document.createElement('option');
-                option.value = pos;
-                option.textContent = pos;
-                if (kanbanFilters.position === pos) option.selected = true;
-                posFilter.appendChild(option);
+        const projFilter = document.getElementById('kanban-filter-project');
+        if (projFilter && projectsData.length > 0) {
+            projFilter.innerHTML = '<option value="">-- Tất cả Dự án --</option>';
+            projectsData.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = (p['Mã Dự án'] || p.code || p.id);
+                opt.innerText = (p['Tên Dự án'] || p.name || p.text);
+                projFilter.appendChild(opt);
             });
         }
 
-        // Populate recruiter filter (from recruitersData)
-        const recruiterFilter = document.getElementById('filter-recruiter');
-        if (recruiterFilter && recruitersData.length > 0) {
-            recruiterFilter.innerHTML = '<option value="">Người phụ trách</option>';
-            recruitersData.forEach(r => {
-                const option = document.createElement('option');
-                option.value = r.name;
-                option.textContent = r.name;
-                if (kanbanFilters.recruiter === r.name) option.selected = true;
-                recruiterFilter.appendChild(option);
+        // 2. Dashboard Filters
+        const dashProj = document.getElementById('filter-dash-project');
+        if (dashProj) {
+            dashProj.innerHTML = '<option value="">Tất cả Dự án</option>';
+            projectsData.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = (p['Mã Dự án'] || p.code || p.id);
+                opt.innerText = (p['Tên Dự án'] || p.name || p.text);
+                dashProj.appendChild(opt);
             });
         }
+
+        const dashTicket = document.getElementById('filter-dash-ticket');
+        if (dashTicket) {
+            dashTicket.innerHTML = '<option value="">Tất cả Ticket</option>';
+            ticketsData.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t['Mã Ticket'] || t.id;
+                opt.innerText = `${t['Mã Ticket'] || t.id} - ${t['Vị trí'] || t.position}`;
+                dashTicket.appendChild(opt);
+            });
+        }
+
+        const dashDept = document.getElementById('filter-dash-dept');
+        if (dashDept) {
+            dashDept.innerHTML = '<option value="">Phòng ban</option>';
+            departmentsData.forEach(d => {
+                const opt = document.createElement('option');
+                opt.value = d.name || d;
+                opt.innerText = d.name || d;
+                dashDept.appendChild(opt);
+            });
+        }
+
+        // Initially populate all positions for Dashboard filter
+        populatePositionDropdown('', 'filter-dash-pos');
     }
 
     // Helper to populate recruiter dropdown in Modals
@@ -6103,11 +6842,16 @@
 
 
     // DOCUMENT HUB LOGIC
-    function openDocumentHub() {
-        const canID = document.getElementById('current-candidate-id').value;
-        if (!canID) return Swal.fire('Lỗi', 'Không xác định được ứng viên', 'error');
+    function openDocumentHub(candidateId = null) {
+        if (!candidateId) {
+            candidateId = document.getElementById('current-candidate-id').value;
+        }
+        if (!candidateId) return Swal.fire('Lỗi', 'Không xác định được ứng viên', 'error');
 
-        const bootstrapModal = new bootstrap.Modal(document.getElementById('documentHubModal'));
+        const modal = document.getElementById('documentHubModal');
+        modal.setAttribute('data-candidate-id', candidateId);
+
+        const bootstrapModal = new bootstrap.Modal(modal);
         bootstrapModal.show();
 
         // Default some data if available from detail form
@@ -6694,76 +7438,5 @@
     }
 
     // DOCUMENT HUB LOGIC
-    function openDocumentHub(candidateId = null) {
-        if (!candidateId) {
-            candidateId = document.getElementById('current-candidate-id').value;
-        }
-        if (!candidateId) return;
-
-        const modal = document.getElementById('documentHubModal');
-        // Pre-fill hidden or data attribute if needed
-        modal.setAttribute('data-candidate-id', candidateId);
-
-        // Reset sub-fields in Hub Modal
-        const salaryField = document.getElementById('doc-salary');
-        if (salaryField) {
-            const c = candidatesData.find(x => x.ID == candidateId);
-            if (c) salaryField.value = c.Salary_Expectation || '';
-        }
-
-        new bootstrap.Modal(modal).show();
-    }
-
-    function generateDocument() {
-        const modal = document.getElementById('documentHubModal');
-        const candidateId = modal.getAttribute('data-candidate-id');
-        const template = document.getElementById('doc-template-select').value;
-
-        if (!candidateId || !template) {
-            Swal.fire('Lỗi', 'Thông tin không hợp lệ', 'warning');
-            return;
-        }
-
-        const extraData = {
-            docNumber: document.getElementById('doc-number-override')?.value,
-            salary: document.getElementById('doc-salary')?.value,
-            salaryWords: document.getElementById('doc-salary-words')?.value,
-            startDate: document.getElementById('doc-start-date')?.value,
-            probationEnd: document.getElementById('doc-probation-end')?.value,
-            deadline: document.getElementById('doc-deadline')?.value,
-            contractPeriod: document.getElementById('doc-contract-period')?.value,
-            location: document.getElementById('doc-location-select')?.value,
-            signer: document.getElementById('doc-signer-select')?.value,
-            manager: document.getElementById('doc-manager')?.value
-        };
-
-        const btn = document.getElementById('btn-generate-doc');
-        const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Đang tạo...';
-        btn.disabled = true;
-
-        google.script.run
-            .withSuccessHandler(function (res) {
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-                if (res.success) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Tạo văn bản thành công',
-                        text: 'Bấm OK để xem file PDF',
-                    }).then(() => {
-                        window.open(res.url, '_blank');
-                    });
-                } else {
-                    Swal.fire('Lỗi', res.message, 'error');
-                }
-            })
-            .withFailureHandler(function (err) {
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-                Swal.fire('Lỗi hệ thống', err.message, 'error');
-            })
-            .apiGenerateDocument(candidateId, template, extraData);
-    }
 
 </script>
