@@ -12,11 +12,35 @@ const SOURCE_SHEET_NAME = 'Survey_Data';
 const PROJECTS_SHEET_NAME = 'PROJECTS';
 const TICKETS_SHEET_NAME = 'RECRUITMENT_TICKETS';
 const DOCUMENT_FOLDER_ID = ''; // Will be auto-created if empty
+const FINAL_DOCUMENT_FOLDER_ID = '1JZ1316lhgt0BJNDabAVMF9YMg_RbIEvs';
 
-// ====================== CẤU HÌNH GEMINI CV PARSER (2026) ======================
-const GEMINI_API_KEY = 'AIzaSyCOIQiwucbtKWpFUF-65ICt8QNJygUvZL4';
-const MODEL = 'gemini-2.0-flash';   // ✅ Model hợp lệ (2026) - đã sửa từ gemini-1.5-flash-latest (lỗi 404)
-const GEMINI_API_VERSION = 'v1beta'; // Phiên bản API
+// MAPPING: Template Name (from UI) -> Google Doc ID
+// Bạn có thể cập nhật ID sau khi script chuyển đổi chạy xong
+const DOC_TEMPLATES = {
+    'TemplateOffer': '',
+    'TemplateContractProbation': '',
+    'TemplateContractOfficial': '',
+    'TemplateCandidateProfile': ''
+};
+
+// ====================== CẤU HÌNH GEMINI (ĐÃ FIX - AN TOÀN 2026) ======================
+const MODEL = 'gemini-2.5-flash';   // Giữ nguyên model của bạn
+
+// Lấy key từ Script Properties (không bị leak khi push GitHub)
+function getGeminiKey() {
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) {
+    throw new Error('Chưa set GEMINI_API_KEY. Hãy chạy hàm setupGeminiKey() một lần!');
+  }
+  return key;
+}
+
+// Chạy 1 lần duy nhất để lưu key mới
+function setupGeminiKey() {
+  PropertiesService.getScriptProperties().setProperty('GEMINI_API_KEY', 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+  console.log('✅ ĐÃ LƯU KEY MỚI THÀNH CÔNG!');
+  SpreadsheetApp.getUi().alert('✅ Key mới đã được lưu an toàn!');
+}
 
 const CV_SCHEMA = {
   "type": "object",
@@ -75,12 +99,11 @@ function apiParseCV(fileData) {
 /**
  * Gọi Gemini với Structured JSON Output
  */
-/**
- * Gọi Gemini với Structured JSON Output
- * Chấp nhận: fileData (CV PDF) HOẶC textOnly + prompt + schema
- */
 function callGeminiAI(input) {
-  const url = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const GEMINI_API_KEY = getGeminiKey();   // ← Dùng key mới an toàn
+  
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  
   let parts = [];
 
   if (input.text_only) {
@@ -121,6 +144,7 @@ function callGeminiAI(input) {
   const responseText = response.getContentText();
 
   if (responseCode !== 200) {
+    console.error("Gemini Error:", responseText);
     throw new Error(`Gemini API Error (${responseCode}): ${responseText}`);
   }
 
@@ -129,13 +153,10 @@ function callGeminiAI(input) {
     throw new Error("Không nhận được kết quả từ Gemini");
   }
 
-  const resultText = json.candidates[0].content.parts[0].text.trim();
-  try {
-    return JSON.parse(resultText);
-  } catch (e) {
-    const cleaned = resultText.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
-  }
+  let resultText = json.candidates[0].content.parts[0].text.trim();
+  resultText = resultText.replace(/```json|```/g, "").trim();
+  
+  return JSON.parse(resultText);
 }
 
 /**
@@ -184,6 +205,8 @@ function apiAnalyzeCandidateMatching(candidateId, ticketId) {
     // 2. Lấy dữ liệu Ticket/JD
     const ticketSheet = getSheetByName(TICKETS_SHEET_NAME);
     let ticket = null;
+    let jdText = "";
+
     if (ticketSheet) {
         const tickData = ticketSheet.getDataRange().getValues();
         const tickHeaders = tickData[0];
@@ -191,10 +214,20 @@ function apiAnalyzeCandidateMatching(candidateId, ticketId) {
         if (ticketRow) {
             ticket = {};
             tickHeaders.forEach((h, i) => ticket[h] = ticketRow[i]);
+            jdText = `Vị trí: ${ticket['Position'] || ticket['Vị trí']}. Yêu cầu: ${ticket['Job_Description'] || ticket['Mô tả'] || ''}`;
         }
     }
 
-    const jdText = ticket ? `Vị trí: ${ticket['Position'] || ticket['Vị trí']}. Yêu cầu: ${ticket['Job_Description'] || ticket['Mô tả'] || ''}` : "Chưa rõ JD cụ thể.";
+    // Nếu không tìm thấy JD trong Tickets, tìm trong Jobs
+    if (!jdText) {
+        const jobs = apiGetJobsV3();
+        const job = jobs.find(j => String(j.ID) === String(ticketId) || String(j.TicketID) === String(ticketId));
+        if (job) {
+            jdText = `Vị trí: ${job.Position || job.Title}. Yêu cầu: ${job.Description || ''}`;
+        }
+    }
+
+    if (!jdText) jdText = "Chưa rõ JD cụ thể.";
     const candidateText = `Học vấn: ${candidate['School']}. Chuyên ngành: ${candidate['Major']}. Kinh nghiệm: ${candidate['Experience']}. Ghi chú: ${candidate['Notes']}`;
 
     const prompt = `Hãy so sánh ứng viên với JD sau. Chấm điểm 0-100 và nêu ưu/nhược điểm.
@@ -228,58 +261,387 @@ function apiAnalyzeCandidateMatching(candidateId, ticketId) {
  */
 function apiChatWithGemini(userMessage) {
   try {
-    const url = "https://generativelanguage.googleapis.com/" + GEMINI_API_VERSION + "/models/" + MODEL + ":generateContent?key=" + GEMINI_API_KEY;
-    
-    // Tạo ngữ cảnh hệ thống để AI hiểu vai trò
-    const systemContext = `Bạn là "Trợ lý Tuyển dụng Trung Khánh" - một AI tích hợp trong hệ thống ATS.
-    Nhiệm vụ:
-    1. Tra cứu dữ liệu (Ứng viên, Ticket, Lịch trình).
-    2. Giải đáp quy trình tuyển dụng.
-    3. Hỗ trợ soạn thảo (Email, JD, Ghi chú).
-    
-    Phong cách: Chuyên nghiệp, thân thiện, trả lời ngắn gọn.
-    Định dạng: Sử dụng Markdown nhẹ, xuống dòng rõ ràng.
-    
-    Dữ liệu ngữ cảnh hiện tại:
-    - Người phụ trách: Admin Trung Khánh.
-    - Hệ thống: ATS (Applicant Tracking System).`;
+
+    // ===============================
+    // 1️⃣ Validate input
+    // ===============================
+    if (!userMessage || typeof userMessage !== "string") {
+      return { success: false, answer: "Anh chưa nhập nội dung câu hỏi." };
+    }
+
+    userMessage = userMessage.trim();
+    const lowerMsg = userMessage.toLowerCase();
+
+    // ===============================
+    // 2️⃣ TRẢ LỜI THỐNG KÊ KHÔNG CẦN AI (TIẾT KIỆM QUOTA)
+    // ===============================
+    const summary = getDatabaseSummaryRaw(); // dùng bản raw object bên dưới
+
+    if (lowerMsg.includes("bao nhiêu ứng viên")) {
+      return {
+        success: true,
+        answer: `Hiện có ${summary.totalCandidates} ứng viên trong hệ thống.`
+      };
+    }
+
+    if (lowerMsg.includes("bao nhiêu dự án") || lowerMsg.includes("bao nhiêu ticket")) {
+      return {
+        success: true,
+        answer: `Hiện có ${summary.openTickets} ticket tuyển dụng đang mở.`
+      };
+    }
+
+    if (lowerMsg.includes("bao nhiêu tin") || lowerMsg.includes("tin tuyển dụng")) {
+      return {
+        success: true,
+        answer: `Có ${summary.openJobs}/${summary.totalJobs} tin đang mở tuyển dụng.`
+      };
+    }
+
+    // ===============================
+    // 3️⃣ TỰ ĐỘNG TẠO JD (KHÔNG CHÈN DB)
+    // ===============================
+    if (
+      lowerMsg.includes("tạo jd") ||
+      lowerMsg.includes("soạn jd") ||
+      lowerMsg.includes("mô tả công việc")
+    ) {
+      let jobTitle = "Business Development Manager";
+
+      const match =
+        userMessage.match(/vị trí[:\s]+([^\.\n]+)/i) ||
+        userMessage.match(/cho (.*?)[\.\n]/i);
+
+      if (match && match[1]) {
+        jobTitle = match[1].trim();
+      }
+
+      const result = apiGenerateJD(jobTitle, userMessage);
+
+      if (result.success) {
+        return { success: true, answer: result.jd };
+      } else {
+        return { success: false, answer: result.message };
+      }
+    }
+
+    // ===============================
+    // 4️⃣ CHAT AI CHUYÊN NGHIỆP
+    // ===============================
+
+    const GEMINI_API_KEY = getGeminiKey();
+    const MODEL = "gemini-2.5-flash";
+
+    const url =
+      "https://generativelanguage.googleapis.com/v1beta/models/" +
+      MODEL +
+      ":generateContent?key=" +
+      GEMINI_API_KEY;
+
+    const systemContext = `
+Bạn là AI Tuyển dụng cao cấp của hệ thống ATS.
+Trả lời ngắn gọn, sắc bén, chuyên nghiệp.
+Không chào hỏi dài dòng.
+Không lặp dữ liệu hệ thống nếu không được hỏi.
+`;
 
     const payload = {
-      "contents": [
-        { 
-          "role": "user", 
-          "parts": [{ "text": systemContext + "\n\nNgười dùng hỏi: " + userMessage }] 
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: systemContext },
+            { text: userMessage }
+          ]
         }
       ],
-      "generationConfig": { 
-        "temperature": 0.7,
-        "maxOutputTokens": 1024
+      generationConfig: {
+        temperature: 0.6,
+        maxOutputTokens: 800
       }
     };
 
     const options = {
-      "method": "post",
-      "contentType": "application/json",
-      "payload": JSON.stringify(payload),
-      "muteHttpExceptions": true
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
     };
 
     const response = UrlFetchApp.fetch(url, options);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-    
+    let responseCode = response.getResponseCode();
+    let responseText = response.getContentText();
+
+    // ===============================
+    // 5️⃣ AUTO RETRY KHI 429
+    // ===============================
+    if (responseCode === 429) {
+      Utilities.sleep(1500);
+      const retry = UrlFetchApp.fetch(url, options);
+      responseCode = retry.getResponseCode();
+      responseText = retry.getContentText();
+    }
+
     if (responseCode !== 200) {
-      throw new Error(`Gemini Error: ${responseText}`);
+      return {
+        success: false,
+        answer: "AI đang quá tải hoặc hết quota. Vui lòng thử lại sau."
+      };
     }
 
     const json = JSON.parse(responseText);
-    const answer = json.candidates?.[0]?.content?.parts?.[0]?.text || "Em chưa tìm ra câu trả lời phù hợp, anh thử hỏi cách khác nhé.";
-    
-    return { success: true, answer: answer };
+    const answer =
+      json.candidates?.[0]?.content?.parts?.[0]?.text || null;
+
+    if (!answer) {
+      return {
+        success: false,
+        answer: "AI chưa phản hồi nội dung hợp lệ."
+      };
+    }
+
+    return {
+      success: true,
+      answer: answer.trim()
+    };
 
   } catch (error) {
-    Logger.log("Chatbot Error: " + error.toString());
-    return { success: false, message: error.toString(), answer: "Xin lỗi, em đang gặp sự cố kết nối. Vui lòng thử lại sau." };
+    Logger.log("Chatbot Error: " + error);
+    return {
+      success: false,
+      answer: "Hệ thống AI đang gặp sự cố."
+    };
+  }
+}
+
+
+/**
+ * BÁO CÁO TUYỂN DỤNG NÂNG CAO (Advanced Reporting Engine)
+ */
+function apiGetAdvancedReports() {
+  try {
+    const candidates = apiGetTableData(CANDIDATE_SHEET_NAME) || [];
+    const tickets = apiGetTableData(TICKETS_SHEET_NAME) || [];
+    const projects = apiGetTableData(PROJECTS_SHEET_NAME) || [];
+    const rejectionReasons = apiGetTableData('RejectionReasons') || [];
+
+    // Helper to get normalized candidate values
+    const getCVal = (c, key) => {
+      const aliases = CANDIDATE_ALIASES[key] || [];
+      const searchPool = [key, ...aliases].map(s => s.toLowerCase().trim());
+      
+      const cKeys = Object.keys(c);
+      for (let s of searchPool) {
+        const found = cKeys.find(k => k.toLowerCase().trim() === s);
+        if (found) return c[found];
+      }
+      return '';
+    };
+
+    // 1. TỔNG QUAN & DỰ ÁN
+    const projectStats = projects.map(p => {
+      const pCode = p['Mã Dự án'];
+      const linkedTickets = tickets.filter(t => t['Mã Dự án'] === pCode);
+      const ticketIds = linkedTickets.map(t => String(t['Mã Ticket'] || t['TicketID']));
+      
+      const pCandidates = candidates.filter(c => {
+        const cTicketId = String(getCVal(c, 'TicketID'));
+        return ticketIds.includes(cTicketId);
+      });
+
+      const hired = pCandidates.filter(c => String(getCVal(c, 'Stage')).toLowerCase().includes('đã nhận việc')).length;
+      const target = parseFloat(p['Chỉ tiêu']) || 0;
+      
+      return {
+        code: pCode,
+        name: p['Tên Dự án'],
+        status: p['Trạng thái'],
+        target: target,
+        hired: hired,
+        completionRate: target > 0 ? (hired / target) * 100 : 0,
+        candidateCount: pCandidates.length
+      };
+    });
+
+    // 2. HIỆU SUẤT RECRUITER
+    const recruiterMap = {};
+    candidates.forEach(c => {
+      const rec = getCVal(c, 'Recruiter') || 'Unassigned';
+      if (!recruiterMap[rec]) {
+        recruiterMap[rec] = { name: rec, processed: 0, hired: 0, totalDays: 0, hiredWithDate: 0 };
+      }
+      
+      recruiterMap[rec].processed++;
+      const stage = String(getCVal(c, 'Stage')).toLowerCase();
+      if (stage.includes('đã nhận việc')) {
+        recruiterMap[rec].hired++;
+        
+        // Calculate Time-to-Hire
+        const appDate = getCVal(c, 'Applied_Date');
+        const hireDate = getCVal(c, 'Hire_Date');
+        if (appDate && hireDate) {
+          const start = new Date(appDate);
+          const end = new Date(hireDate);
+          if (!isNaN(start) && !isNaN(end)) {
+            const diff = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+            if (diff >= 0) {
+              recruiterMap[rec].totalDays += diff;
+              recruiterMap[rec].hiredWithDate++;
+            }
+          }
+        }
+      }
+    });
+
+    const recruiterStats = Object.values(recruiterMap).map(r => ({
+      ...r,
+      hitRate: r.processed > 0 ? (r.hired / r.processed) * 100 : 0,
+      avgDays: r.hiredWithDate > 0 ? r.totalDays / r.hiredWithDate : 0
+    })).sort((a, b) => b.hired - a.hired);
+
+    // 3. CHI PHÍ (PARSE JSON)
+    let totalCost = 0;
+    tickets.forEach(t => {
+      const costStr = t['Chi phí tuyển dụng'] || t['costs'];
+      if (costStr) {
+        try {
+          const costsArray = JSON.parse(costStr);
+          if (Array.isArray(costsArray)) {
+            costsArray.forEach(item => {
+              totalCost += parseFloat(item.cost) || 0;
+            });
+          }
+        } catch (e) {
+          // Fallback if not JSON
+          const val = parseFloat(costStr);
+          if (!isNaN(val)) totalCost += val;
+        }
+      }
+    });
+
+    const totalHired = candidates.filter(c => String(getCVal(c, 'Stage')).toLowerCase().includes('đã nhận việc')).length;
+
+    // 4. NGUỒN (SOURCE ANALYSIS)
+    const sourceMap = {};
+    candidates.forEach(c => {
+      const src = getCVal(c, 'Source') || 'Other';
+      if (!sourceMap[src]) sourceMap[src] = { name: src, count: 0, hired: 0 };
+      sourceMap[src].count++;
+      if (String(getCVal(c, 'Stage')).toLowerCase().includes('đã nhận việc')) {
+        sourceMap[src].hired++;
+      }
+    });
+
+    const sourceStats = Object.values(sourceMap).map(s => ({
+      ...s,
+      efficiency: s.count > 0 ? (s.hired / s.count) * 100 : 0
+    })).sort((a,b) => b.count - a.count);
+
+    // 5. REJECTION ANALYSIS
+    const rejectionMap = {};
+    candidates.forEach(c => {
+      const stage = String(getCVal(c, 'Stage')).toLowerCase();
+      const status = String(getCVal(c, 'Status')).toLowerCase();
+      if (stage.includes('từ chối') || status.includes('loại')) {
+        const reason = getCVal(c, 'Rejection_Reason') || 'Chưa rõ lý do';
+        rejectionMap[reason] = (rejectionMap[reason] || 0) + 1;
+      }
+    });
+
+    // 6. 4-STAGE FUNNEL DATA (User Requested)
+    const filteringStages = {
+        total: candidates.length,
+        screening: candidates.filter(c => {
+            const s = String(getCVal(c, 'Stage')).toLowerCase();
+            return s.includes('sơ vấn') || s.includes('screening') || s.includes('liên hệ');
+        }).length,
+        qualified: candidates.filter(c => {
+            const s = String(getCVal(c, 'Stage')).toLowerCase();
+            return s.includes('đạt') || s.includes('pass') || s.includes('phê duyệt') || s.includes('offer');
+        }).length,
+        hired: totalHired
+    };
+
+    return {
+      success: true,
+      overview: {
+        totalCandidates: candidates.length,
+        totalHired: totalHired,
+        totalCost: totalCost,
+        costPerHire: totalHired > 0 ? totalCost / totalHired : 0,
+        activeTickets: tickets.filter(t => t['Trạng thái Phê duyệt'] === 'Approved').length,
+        activeProjects: projects.filter(p => p['Trạng thái'] === 'Active').length
+      },
+      projectStats: projectStats,
+      recruiterStats: recruiterStats,
+      sourceStats: sourceStats,
+      rejectionStats: rejectionMap,
+      funnelData: {
+        total: candidates.length,
+        hired: totalHired,
+        conversionRate: candidates.length > 0 ? (totalHired / candidates.length) * 100 : 0,
+        stages: filteringStages
+      }
+    };
+
+  } catch (error) {
+    Logger.log('Advanced Report Error: ' + error.toString());
+    return { success: false, message: error.toString() };
+  }
+}
+
+/**
+ * Lấy dữ liệu thống kê dạng object (không format text)
+ */
+function getDatabaseSummaryRaw() {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+    let totalJobs = 0;
+    let openJobs = 0;
+    let totalCandidates = 0;
+    let openTickets = 0;
+
+    const jobsSheet = ss.getSheetByName('Jobs') || ss.getSheetByName('DATA JOBS');
+    if (jobsSheet && jobsSheet.getLastRow() > 1) {
+      const lastRow = jobsSheet.getLastRow();
+      const statusValues = jobsSheet.getRange(2, 6, lastRow - 1, 1).getValues().flat();
+      totalJobs = statusValues.length;
+      openJobs = statusValues.filter(s => {
+        const st = String(s).toLowerCase();
+        return st.includes('open') || st.includes('đang');
+      }).length;
+    }
+
+    const candSheet = ss.getSheetByName('DATA ỨNG VIÊN') || ss.getSheetByName('Ứng Viên');
+    if (candSheet) {
+      totalCandidates = Math.max(0, candSheet.getLastRow() - 1);
+    }
+
+    const ticketSheet = ss.getSheetByName('RECRUITMENT_TICKETS');
+    if (ticketSheet && ticketSheet.getLastRow() > 1) {
+      const lastRow = ticketSheet.getLastRow();
+      const statusValues = ticketSheet.getRange(2, 6, lastRow - 1, 1).getValues().flat();
+      openTickets = statusValues.filter(s => {
+        const st = String(s).toLowerCase();
+        return st.includes('open') || st.includes('đang');
+      }).length;
+    }
+
+    return {
+      totalJobs: totalJobs,
+      openJobs: openJobs,
+      totalCandidates: totalCandidates,
+      openTickets: openTickets
+    };
+
+  } catch (e) {
+    return {
+      totalJobs: 0,
+      openJobs: 0,
+      totalCandidates: 0,
+      openTickets: 0
+    };
   }
 }
 
@@ -312,6 +674,7 @@ function apiCreateInterviewSchedule(scheduleData) {
     } catch (error) {
         return { success: false, message: 'Lỗi tạo lịch: ' + error.toString() };
     }
+
 }
 
 
@@ -342,6 +705,7 @@ const CANDIDATE_ALIASES = {
   'Rejection_Type': ['Rejection_Type', 'Loại từ chối'],
   'Rejection_Reason': ['Rejection_Reason', 'Lý do từ chối'],
   'Rejection_Source': ['Rejection_Source', 'Đối tượng từ chối'],
+  'Rejection_Stage': ['Rejection_Stage', 'Giai đoạn từ chối'],
   'Hire_Date': ['Hire_Date', 'Ngày nhận việc']
 };
 
@@ -698,7 +1062,10 @@ function debugSheetData() {
 function doGet(e) {
   if (!e) e = { parameter: {} };
   
-  if (e.parameter && e.parameter.view === 'career') {
+  // Support both 'view' and 'page' parameters for routing
+  const page = (e.parameter.view || e.parameter.page || '').toLowerCase();
+
+  if (page === 'career') {
       return HtmlService.createTemplateFromFile('CareerPage')
           .evaluate()
           .setTitle('Tuyển Dụng - HR Recruit')
@@ -706,7 +1073,7 @@ function doGet(e) {
           .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
 
-  if (e.parameter && e.parameter.view === 'news') {
+  if (page === 'news') {
       return HtmlService.createTemplateFromFile('NewsPage')
           .evaluate()
           .setTitle('Tin Tức - HR Recruit')
@@ -1485,6 +1852,7 @@ function apiUpdateCandidateStatus(candidateId, newStage, rejectionData = null) {
         const hireDateIndex = findIdx('Hire_Date');
         const rejectTypeIndex = findIdx('Rejection_Type');
         const rejectReasonIndex = findIdx('Rejection_Reason');
+        const rejectStageIndex = findIdx('Rejection_Stage');
 
         if (idIndex === -1 || stageIndex === -1) {
             return { success: false, message: 'Missing required columns (ID or Stage)' };
@@ -1508,10 +1876,12 @@ function apiUpdateCandidateStatus(candidateId, newStage, rejectionData = null) {
                 if (rejectionData) {
                     if (rejectTypeIndex !== -1) sheet.getRange(i + 1, rejectTypeIndex + 1).setValue(rejectionData.type || '');
                     if (rejectReasonIndex !== -1) sheet.getRange(i + 1, rejectReasonIndex + 1).setValue(rejectionData.reason || '');
-                } else if (!newStage.toLowerCase().includes('loại') && !newStage.toLowerCase().includes('reject')) {
+                    if (rejectStageIndex !== -1) sheet.getRange(i + 1, rejectStageIndex + 1).setValue(rejectionData.stage || '');
+                } else if (!newStage.toLowerCase().includes('loại') && !newStage.toLowerCase().includes('reject') && !newStage.toLowerCase().includes('từ chối')) {
                     // Reset rejection info if moved out of rejected
                     if (rejectTypeIndex !== -1) sheet.getRange(i + 1, rejectTypeIndex + 1).setValue('');
                     if (rejectReasonIndex !== -1) sheet.getRange(i + 1, rejectReasonIndex + 1).setValue('');
+                    if (rejectStageIndex !== -1) sheet.getRange(i + 1, rejectStageIndex + 1).setValue('');
                 }
                 
                 // LOG ACTIVITY
@@ -2627,18 +2997,29 @@ function apiGetJobsV3() {
         const rows = data.slice(1);
         
         const getColIdx = (name) => findColumnIndex(headers, name);
+        
+        const idxID = getColIdx('ID');
+        const idxTitle = getColIdx('Title');
+        const idxDept = getColIdx('Department');
+        const idxPos = getColIdx('Position');
+        const idxLoc = getColIdx('Location');
+        const idxType = getColIdx('Type');
+        const idxStat = getColIdx('Status');
+        const idxDate = getColIdx('Created_Date');
+        const idxDesc = getColIdx('Description');
+        const idxTicket = getColIdx('TicketID');
 
         const jobs = rows.map(row => ({
-            ID: row[getColIdx('ID')] ? String(row[getColIdx('ID')]) : '',
-            Title: row[getColIdx('Title')] ? String(row[getColIdx('Title')]) : '',
-            Department: row[getColIdx('Department')] ? String(row[getColIdx('Department')]) : '',
-            Position: row[getColIdx('Position')] !== -1 ? String(row[getColIdx('Position')]) : '', // MAPPING ĐỘNG
-            Location: row[getColIdx('Location')] ? String(row[getColIdx('Location')]) : '',
-            Type: row[getColIdx('Type')] ? String(row[getColIdx('Type')]) : '',
-            Status: row[getColIdx('Status')] ? String(row[getColIdx('Status')]) : '',
-            Created_Date: row[getColIdx('Created_Date')] ? String(row[getColIdx('Created_Date')]) : '',
-            Description: row[getColIdx('Description')] ? String(row[getColIdx('Description')]) : '',
-            TicketID: row[getColIdx('TicketID')] !== -1 ? String(row[getColIdx('TicketID')]) : '' // MAPPING ĐỘNG
+            ID: idxID !== -1 ? String(row[idxID] || '') : '',
+            Title: idxTitle !== -1 ? String(row[idxTitle] || '') : '',
+            Department: idxDept !== -1 ? String(row[idxDept] || '') : '',
+            Position: idxPos !== -1 ? String(row[idxPos] || '') : '', 
+            Location: idxLoc !== -1 ? String(row[idxLoc] || '') : '',
+            Type: idxType !== -1 ? String(row[idxType] || '') : '',
+            Status: idxStat !== -1 ? String(row[idxStat] || '') : '',
+            Created_Date: idxDate !== -1 ? String(row[idxDate] || '') : '',
+            Description: idxDesc !== -1 ? String(row[idxDesc] || '') : '',
+            TicketID: idxTicket !== -1 ? String(row[idxTicket] || '') : '' 
         }));
         
         return jobs.reverse();
@@ -4285,6 +4666,12 @@ function apiCleanupCandidateSheet() {
  * @param {string} templateName - The name of the HTML file (e.g. 'TemplateOffer')
  * @param {Object} extraData - Additional data from form (e.g. salary, startDate)
  */
+/**
+ * GENERATE PDF DOCUMENT (Offer, Contract, Profile)
+ * @param {string} candidateId 
+ * @param {string} templateName - The name of the HTML file or Google Doc Template key
+ * @param {Object} extraData - Additional data from form (e.g. salary, startDate)
+ */
 function apiGenerateDocument(candidateId, templateName, extraData) {
   try {
     const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CANDIDATE_SHEET_NAME);
@@ -4301,7 +4688,7 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
       }
     }
     
-    if (candidateRow === -1) return { success: false, message: 'KhÃ´ng tÃ¬m tháº¥y á»©ng viÃªn' };
+    if (candidateRow === -1) return { success: false, message: 'Không tìm thấy ứng viên' };
     
     const rawCandidate = {};
     headers.forEach((h, idx) => {
@@ -4312,11 +4699,9 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
     const candidate = {};
     Object.keys(CANDIDATE_ALIASES).forEach(key => {
       const aliases = CANDIDATE_ALIASES[key] || [];
-      // Try key itself first
       if (rawCandidate[key] !== undefined) {
         candidate[key] = rawCandidate[key];
       } else {
-        // Try aliases
         for (let a of aliases) {
           if (rawCandidate[a] !== undefined) {
             candidate[key] = rawCandidate[a];
@@ -4327,41 +4712,12 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
       if (candidate[key] === undefined) candidate[key] = '';
     });
 
-    // Also keep raw fields just in case template uses exact headers
     const candidateMerged = { ...rawCandidate, ...candidate };
 
-    // 2. Prepare Template Content
-    let htmlContent = HtmlService.createTemplateFromFile(templateName).getRawContent();
-    
-    // 3. Replace Variables (Candidate Data)
-    Object.keys(candidateMerged).forEach(key => {
-      let val = candidateMerged[key] || '';
-      if (val instanceof Date) {
-        val = Utilities.formatDate(val, Session.getScriptTimeZone(), "dd/MM/yyyy");
-      }
-      const regex = new RegExp(`{{${key}}}`, 'g');
-      htmlContent = htmlContent.replace(regex, val);
-    });
-
-    // 3.0 Merge Survey Data (if available by email)
-    const candidateEmail = candidate['Email'];
-    Logger.log('ðŸ“§ Candidate Email from Data: ' + candidateEmail);
-    if (candidateEmail) {
-      const surveyData = apiGetSurveyData(candidateEmail);
-      Logger.log('ðŸ“Š Survey Data Keys Found: ' + Object.keys(surveyData).join(', '));
-      Object.keys(surveyData).forEach(key => {
-        let val = surveyData[key] || '';
-        if (val instanceof Date) {
-          val = Utilities.formatDate(val, Session.getScriptTimeZone(), "dd/MM/yyyy");
-        }
-        const regex = new RegExp(`{{${key}}}`, 'g');
-        htmlContent = htmlContent.replace(regex, val);
-      });
-    }
-
-    // 3.1 Load and Replace Company Information
-    // 3.1 Load Company Information as Defaults
+    // Prepare all replacement variables
     let replacementVars = {};
+    
+    // 3.1 Load Company Information
     const companyRes = apiGetCompanyInfo();
     if (companyRes.success && companyRes.data) {
       const info = companyRes.data;
@@ -4379,7 +4735,24 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
       };
     }
 
-    // 4. Override with Extra Variables (from HR form)
+    // Merge Candidate and Survey Data
+    Object.keys(candidateMerged).forEach(key => {
+      let val = candidateMerged[key] || '';
+      if (val instanceof Date) val = Utilities.formatDate(val, Session.getScriptTimeZone(), "dd/MM/yyyy");
+      replacementVars[key] = val;
+    });
+
+    const candidateEmail = candidate['Email'];
+    if (candidateEmail) {
+      const surveyData = apiGetSurveyData(candidateEmail);
+      Object.keys(surveyData).forEach(key => {
+        let val = surveyData[key] || '';
+        if (val instanceof Date) val = Utilities.formatDate(val, Session.getScriptTimeZone(), "dd/MM/yyyy");
+        replacementVars[key] = val;
+      });
+    }
+
+    // Override with Extra Variables
     if (extraData) {
       Object.keys(extraData).forEach(key => {
         if (extraData[key] !== undefined && extraData[key] !== null && extraData[key] !== '') {
@@ -4388,33 +4761,49 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
       });
     }
 
-    // 4.1 Perform Batch Replacement
-    Object.keys(replacementVars).forEach(key => {
+    // Dates
+    const now = new Date();
+    replacementVars['Today'] = Utilities.formatDate(now, Session.getScriptTimeZone(), "dd/MM/yyyy");
+    replacementVars['TodayFull'] = `ngày ${now.getDate()} tháng ${now.getMonth() + 1} năm ${now.getFullYear()}`;
+    const dateSuffix = Utilities.formatDate(now, Session.getScriptTimeZone(), "ddMMyyyy");
+
+    // NEW NAME RULE: [TemplateName]-[CandidateName]-[ddmmyyyy]
+    const baseFileName = `${templateName}-${candidate.Name || 'Candidate'}-${dateSuffix}`;
+    const targetFolder = DriveApp.getFolderById(FINAL_DOCUMENT_FOLDER_ID || DOCUMENT_FOLDER_ID);
+    
+    let pdfBlob;
+
+    // CHECK IF USING GOOGLE DOC TEMPLATE
+    if (DOC_TEMPLATES[templateName]) {
+      const docId = DOC_TEMPLATES[templateName];
+      const copy = DriveApp.getFileById(docId).makeCopy(baseFileName, targetFolder);
+      const doc = DocumentApp.openById(copy.getId());
+      const body = doc.getBody();
+
+      // Replace in body - support both {{Key}} and {Key}
+      Object.keys(replacementVars).forEach(key => {
+        const val = String(replacementVars[key]);
+        body.replaceText(`{{${key}}}`, val);
+        body.replaceText(`{${key}}`, val);
+      });
+
+      doc.saveAndClose();
+      pdfBlob = copy.getAs('application/pdf');
+      copy.setTrashed(true); // Cleanup temp doc
+    } else {
+      // HTML FALLBACK
+      let htmlContent = HtmlService.createTemplateFromFile(templateName).getRawContent();
+      Object.keys(replacementVars).forEach(key => {
         const regex = new RegExp(`{{${key}}}`, 'g');
         htmlContent = htmlContent.replace(regex, replacementVars[key]);
-    });
+      });
+      pdfBlob = HtmlService.createHtmlOutput(htmlContent).getAs('application/pdf');
+    }
 
-    // 5. Add current date
-    const now = new Date();
-    const today = Utilities.formatDate(now, Session.getScriptTimeZone(), "dd/MM/yyyy");
-    const todayFull = `ngÃ y ${now.getDate()} thÃ¡ng ${now.getMonth() + 1} nÄƒm ${now.getFullYear()}`;
-    
-    htmlContent = htmlContent.replace(/{{Today}}/g, today);
-    htmlContent = htmlContent.replace(/{{TodayFull}}/g, todayFull);
-    htmlContent = htmlContent.replace(/{{Today}}/g, today);
-
-    // 6. Create PDF
-    const blob = HtmlService.createHtmlOutput(htmlContent).getAs('application/pdf');
-    const fileName = `${templateName}_${candidate.Name}_${Utilities.formatDate(new Date(), "GMT+7", "yyyyMMdd")}.pdf`;
-    
-    // 7. Save to Drive
-    const targetFolder = getDocumentFolder(templateName);
-    const file = targetFolder.createFile(blob).setName(fileName);
+    const file = targetFolder.createFile(pdfBlob).setName(baseFileName + ".pdf");
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     
-    // 8. Log Activity
-    const userEmail = Session.getActiveUser().getEmail() || 'Admin';
-    logActivity(userEmail, 'Táº¡o vÄƒn báº£n', `ÄÃ£ xuáº¥t file **${fileName}** tá»« máº«u **${templateName}** cho á»©ng viÃªn **${candidate.Name}**`, candidateId);
+    logActivity(Session.getActiveUser().getEmail() || 'Admin', 'Tạo văn bản', `Đã xuất file **${file.getName()}** cho ứng viên **${candidate.Name}**`, candidateId);
 
     return { 
       success: true, 
@@ -4427,6 +4816,39 @@ function apiGenerateDocument(candidateId, templateName, extraData) {
     Logger.log('PDF Generation Error: ' + e.toString());
     return { success: false, message: e.toString() };
   }
+}
+
+/**
+ * MỘT LẦN CHẠY: Chuyển toàn bộ template HTML cũ sang Google Doc
+ * Người dùng cần Copy-Paste nội dung HTML vào Doc thủ công nếu muốn giữ định dạng đẹp nhất,
+ * nhưng hàm này sẽ tạo ra các file Doc trắng có sẵn placeholders.
+ */
+function helperConvertHtmlTemplatesToDocs() {
+  const templates = ['TemplateOffer', 'TemplateContractProbation', 'TemplateContractOfficial', 'TemplateCandidateProfile'];
+  const folder = DriveApp.getFolderById(FINAL_DOCUMENT_FOLDER_ID);
+  const results = {};
+
+  templates.forEach(name => {
+    try {
+      const content = HtmlService.createTemplateFromFile(name).getRawContent();
+      // Loại bỏ thẻ style và html để lấy text cơ bản hoặc dùng bản text-only
+      const cleanText = content.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                               .replace(/<[^>]+>/g, '\n')
+                               .replace(/\n\s*\n/g, '\n');
+      
+      const doc = DocumentApp.create('TEMPLATE_DOC_' + name);
+      doc.getBody().setText("BẠN CẦN CHỈNH SỬA LẠI ĐỊNH DẠNG FILE NÀY TRƯỚC KHI DÙNG\n\n" + cleanText);
+      const file = DriveApp.getFileById(doc.getId());
+      file.moveTo(folder);
+      results[name] = doc.getId();
+    } catch (e) {
+      Logger.log("Error converting " + name + ": " + e.toString());
+    }
+  });
+  
+  Logger.log("CHƯA XONG: Bạn hãy lấy các ID này và cập nhật vào biến DOC_TEMPLATES ở đầu file Code.gs:");
+  Logger.log(JSON.stringify(results, null, 2));
+  return results;
 }
 
 /**
@@ -4904,4 +5326,3 @@ function removeAutoGmailTrigger() {
     }
     Logger.log("[Gmail CV] Đã xoá " + count + " trigger.");
 }
-
